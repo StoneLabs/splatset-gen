@@ -70,19 +70,24 @@ def render(
     sort_idx = torch.argsort(depth)
     win_size = torch.tensor([width, height], device=device, dtype=dtype)
     n_sorted = sort_idx.numel()
-    report_every = max(1, n_sorted // 20)
+    report_every_ui = max(1, n_sorted // 100)
+    report_every_log = max(1, n_sorted // 20)
 
     yy = torch.arange(height, device=device, dtype=dtype)
     xx = torch.arange(width, device=device, dtype=dtype)
     grid_y, grid_x = torch.meshgrid(yy, xx, indexing="ij")
 
     for j, idx in enumerate(sort_idx.tolist()):
-        if verbose and j % report_every == 0:
-            pct = f"{100.0 * j / n_sorted:5.1f}% ({j}/{n_sorted})"
+        pct = 100.0 * (j + 1) / n_sorted
+        if j % report_every_ui == 0 or j == n_sorted - 1:
             if event_log.is_active():
-                event_log.log(f"[dim]rasterize[/] {pct}")
+                event_log.render_progress(pct)
+        if verbose and (j % report_every_log == 0 or j == n_sorted - 1):
+            pct_label = f"{pct:5.1f}% ({j + 1}/{n_sorted})"
+            if event_log.is_active():
+                event_log.log(f"[dim]rasterize[/] {pct_label}")
             else:
-                print(f"  rasterize {pct}", flush=True)
+                print(f"  rasterize {pct_label}", flush=True)
 
         d = depth[idx].item()
         if d < near or d > far:

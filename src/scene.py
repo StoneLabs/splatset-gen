@@ -7,7 +7,9 @@ from typing import Any
 
 import numpy as np
 import torch
+from plyfile import PlyData
 
+import event_log
 from ply_loader import SceneGaussians, load_ply
 
 
@@ -110,6 +112,7 @@ def build_random_scene(
     ply_paths: list[Path],
     config: dict[str, Any],
     rng: np.random.Generator,
+    verbose: bool = False,
 ) -> tuple[SceneGaussians, list[dict[str, Any]]]:
     """Load, transform, and concatenate random PLY objects into one scene."""
     if not ply_paths:
@@ -127,11 +130,39 @@ def build_random_scene(
     num_objects = int(rng.integers(n_min, n_max + 1))
     chosen = [Path(rng.choice(ply_paths)) for _ in range(num_objects)]
 
+    if verbose and event_log.is_active():
+        from collections import Counter
+
+        counts = Counter(p.name for p in chosen)
+        summary = ", ".join(
+            f"{name}×{count}" if count > 1 else name for name, count in sorted(counts.items())
+        )
+        cap_note = f" · cap {max_g:,}/ply" if max_g else ""
+        event_log.log(
+            f"[dim]scene[/] {num_objects} slots from {len(ply_paths)} PLYs{cap_note}: {summary}"
+        )
+
     parts: list[SceneGaussians] = []
     metadata: list[dict[str, Any]] = []
 
     for object_id, ply_path in enumerate(chosen):
+        if verbose and event_log.is_active():
+            event_log.worker_status("scene", f"load {ply_path.name}")
+
+        n_total: int | None = None
+        if verbose and max_g is not None:
+            n_total = len(PlyData.read(str(ply_path))["vertex"])
+
         obj = load_ply(ply_path, max_gaussians=max_g, rng=rng)
+        n_loaded = obj.num_gaussians
+
+        if verbose and event_log.is_active():
+            if n_total is not None and n_total > n_loaded:
+                count_label = f"{n_loaded:,}/{n_total:,} gaussians (subset)"
+            else:
+                count_label = f"{n_loaded:,} gaussians"
+            event_log.log(f"[dim]ply[/] oid={object_id} {ply_path.name} · {count_label}")
+
         lo, hi = obj.bounds()
         center = torch.from_numpy(((lo + hi) / 2.0).astype(np.float32))
         obj = SceneGaussians(
@@ -162,5 +193,14 @@ def build_random_scene(
                 },
             }
         )
+
+        if verbose and event_log.is_active():
+            rot_deg = np.rad2deg(euler)
+            event_log.log(
+                f"[dim]place[/] oid={object_id} "
+                f"pos=[{placement[0]:+.2f},{placement[1]:+.2f},{placement[2]:+.2f}] "
+                f"rot=[{rot_deg[0]:.0f},{rot_deg[1]:.0f},{rot_deg[2]:.0f}]° "
+                f"scale={scale:.2f}"
+            )
 
     return _concat_gaussians(parts), metadata

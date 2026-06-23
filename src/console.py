@@ -43,12 +43,16 @@ class WorkerState:
     sample_id: str = "—"
     elapsed: float = 0.0
     started_at: float | None = None
+    render_pct: float | None = None
+    phase: str = "—"
+    detail: str = "—"
 
 
 @dataclass
 class ProgressTracker:
     num_samples: int
     workers: int
+    verbose: bool = False
     worker_states: dict[int, WorkerState] = field(default_factory=dict)
     completed: int = 0
     failed: int = 0
@@ -87,6 +91,9 @@ class ProgressTracker:
         st.sample_id = sample_id
         st.started_at = time.perf_counter()
         st.elapsed = 0.0
+        st.render_pct = None
+        st.phase = "starting"
+        st.detail = "—"
 
     def on_done(self, worker_id: int, sample_id: str, elapsed: float, error: str | None) -> None:
         st = self.worker_states[worker_id]
@@ -101,6 +108,20 @@ class ProgressTracker:
         st.sample_id = "—"
         st.elapsed = 0.0
         st.started_at = None
+        st.render_pct = None
+        st.phase = "—"
+        st.detail = "—"
+
+    def on_render(self, worker_id: int, pct: float) -> None:
+        st = self.worker_states[worker_id]
+        if st.status == "working":
+            st.render_pct = max(0.0, min(100.0, pct))
+
+    def on_status(self, worker_id: int, phase: str, detail: str) -> None:
+        st = self.worker_states[worker_id]
+        if st.status == "working":
+            st.phase = phase
+            st.detail = detail or "—"
 
     def on_log(self, message: str) -> None:
         self.recent.append(message)
@@ -158,17 +179,29 @@ def build_live_render(tracker: ProgressTracker) -> Table:
     worker_table.add_column("Worker", width=10)
     worker_table.add_column("Status", width=10)
     worker_table.add_column("Sample", width=10)
+    worker_table.add_column("Render", justify="right", width=7)
+    if tracker.verbose:
+        worker_table.add_column("Phase", width=10)
+        worker_table.add_column("Detail", min_width=24, no_wrap=False)
     worker_table.add_column("Elapsed", justify="right", width=10)
 
     for wid in sorted(tracker.worker_states):
         st = tracker.worker_states[wid]
         elapsed = f"{st.elapsed:.1f}s" if st.status == "working" else "—"
-        worker_table.add_row(
+        if st.status == "working" and st.render_pct is not None:
+            render = f"{int(st.render_pct)}%"
+        else:
+            render = "—"
+        row: list[Any] = [
             _worker_label(wid, st.status),
             Text(st.status, style=_status_style(st.status)),
             st.sample_id,
-            elapsed,
-        )
+            render,
+        ]
+        if tracker.verbose:
+            row.extend([st.phase, st.detail])
+        row.append(elapsed)
+        worker_table.add_row(*row)
 
     root.add_row(Panel(tracker._progress, border_style="cyan", padding=(0, 1)))
     root.add_row(worker_table)
