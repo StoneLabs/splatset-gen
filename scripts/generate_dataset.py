@@ -20,7 +20,7 @@ import typer
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from console import confirm_or_exit, print_plan  # noqa: E402
+from console import confirm_or_exit, prepare_output_dir, print_plan  # noqa: E402
 from parallel import generate_dataset_parallel, load_config  # noqa: E402
 
 DEFAULT_PLY_DIR = ROOT / "assets" / "ply"
@@ -49,7 +49,11 @@ def main(
         DEFAULT_OUTPUT,
         "--output",
         "-o",
-        help=f"Output run directory [default: {DEFAULT_OUTPUT}]",
+        help=(
+            f"Output run directory [default: {DEFAULT_OUTPUT}]. "
+            "Must be empty; if it already contains a run you will be asked "
+            "y/N to delete it (or pass --yes to delete without asking)."
+        ),
     ),
     num_samples: int = typer.Option(
         100,
@@ -85,7 +89,10 @@ def main(
         False,
         "--yes",
         "-y",
-        help="Skip pre-flight confirmation prompt",
+        help=(
+            "Non-interactive mode: delete existing output without y/N prompt, "
+            "then start generation without the Enter prompt"
+        ),
     ),
 ) -> None:
     """Generate a click-to-segment dataset from 3DGS PLY objects."""
@@ -118,6 +125,7 @@ def main(
         seed=seed,
         verbose=verbose,
     )
+    prepare_output_dir(output, auto_confirm=yes)
     confirm_or_exit(skip=yes)
 
     generate_dataset_parallel(

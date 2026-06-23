@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import time
+
+import click
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -208,13 +211,22 @@ def print_plan(
     threads_per_worker = max(1, cpu // max(workers, 1))
     cap = generation.get("max_gaussians_per_object")
 
+    if output_dir_in_use(output):
+        summary = _describe_output_dir(output)
+        output_line = (
+            f"  Output           [cyan]{output}[/]  "
+            f"[yellow](exists — {summary}; delete y/N prompt next)[/]"
+        )
+    else:
+        output_line = f"  Output           [cyan]{output}[/]  [dim](new directory)[/]"
+
     lines = [
         "[bold underline]Run[/]",
         f"  Samples          {num_samples}",
         f"  Workers          {workers}  [dim]({cpu} CPUs, ~{threads_per_worker} torch threads/worker)[/]",
         f"  Seed             {seed}",
         f"  Verbose raster   {'[yellow]on[/]' if verbose else '[dim]off[/]'}",
-        f"  Output           [cyan]{output}[/]",
+        output_line,
         "",
         "[bold underline]Input[/]",
         f"  PLY dir          [cyan]{ply_dir}[/]  ({len(ply_files)} files)",
@@ -272,6 +284,46 @@ def print_plan(
         )
     )
     console.print()
+
+
+def output_dir_in_use(path: Path) -> bool:
+    """Return True if ``path`` exists and contains any prior run artifacts."""
+    if not path.exists():
+        return False
+    return any(path.iterdir())
+
+
+def _describe_output_dir(path: Path) -> str:
+    jsonl = path / "annotations.jsonl"
+    if jsonl.is_file():
+        try:
+            count = sum(1 for _ in jsonl.open())
+            return f"{count} annotation(s) in annotations.jsonl"
+        except OSError:
+            pass
+    entries = sum(1 for _ in path.iterdir())
+    return f"{entries} item(s)"
+
+
+def prepare_output_dir(output: Path, *, auto_confirm: bool = False) -> None:
+    """Refuse to append to an existing run; delete after [y/N] confirmation or exit."""
+    if not output_dir_in_use(output):
+        return
+
+    summary = _describe_output_dir(output)
+    console.print(
+        f"[yellow]Output directory already in use:[/] [cyan]{output}[/] [dim]({summary})[/]\n"
+        "Existing runs cannot be appended to."
+    )
+
+    if auto_confirm:
+        console.print("[dim]Deleting existing output without prompt (--yes)[/]")
+    elif not click.confirm("Delete this directory and continue?", default=False, show_default=True):
+        console.print("[yellow]Cancelled.[/]")
+        raise SystemExit(0)
+
+    shutil.rmtree(output)
+    console.print(f"[dim]Deleted[/] [cyan]{output}[/]\n")
 
 
 def confirm_or_exit(skip: bool) -> None:
