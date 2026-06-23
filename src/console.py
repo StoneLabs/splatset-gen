@@ -338,6 +338,8 @@ def print_plan(
             f"  Resolution       {render.get('width', '?')}×{render.get('height', '?')}",
             f"  SH degree        {render.get('sh_degree', 0)}",
             f"  Alpha threshold  {render.get('alpha_threshold', 0.5)}",
+            f"  Mask mode        {render.get('mask_mode', 'binary')}",
+            f"  Mask weight τ    {render.get('mask_weight_threshold', 0.05)}",
             "",
             "[bold underline]Scene[/]",
             f"  Objects / sample {_fmt_range([scene.get('num_objects_min'), scene.get('num_objects_max')])}",

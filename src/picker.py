@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+MASK_MODES = frozenset({"binary", "soft"})
+
 
 def sample_click(
     alpha: torch.Tensor,
@@ -31,14 +33,49 @@ def sample_click(
 def object_mask(
     object_weights: torch.Tensor,
     clicked_object_id: int,
+    *,
+    mode: str = "binary",
     weight_threshold: float = 0.05,
 ) -> torch.Tensor:
     """Visible-only object mask from per-object compositing weights.
 
-    White where the clicked object contributes enough visible weight; black
-    elsewhere (background, other objects, occluded regions, transparent fringe).
+    ``binary`` (default): 0 or 255 — white where the clicked object is dominant
+    and its accumulated weight exceeds ``weight_threshold``; black elsewhere.
+
+    ``soft``: grayscale 0–255 proportional to accumulated weight on dominant
+    pixels (matches semi-transparent splat edges). Pixels below
+    ``weight_threshold`` are zeroed as noise. Occluded / non-dominant pixels stay 0.
     """
+    if mode not in MASK_MODES:
+        raise ValueError(f"Unknown mask mode {mode!r}; use binary or soft")
+
     contrib = object_weights[:, :, clicked_object_id]
     dominant = object_weights.argmax(dim=-1) == clicked_object_id
+
+    if mode == "soft":
+        strength = torch.where(dominant, contrib, torch.zeros_like(contrib))
+        if weight_threshold > 0.0:
+            strength = torch.where(
+                strength >= weight_threshold,
+                strength,
+                torch.zeros_like(strength),
+            )
+        return (strength.clamp(0.0, 1.0) * 255.0).to(torch.uint8)
+
     visible = (contrib > weight_threshold) & dominant
     return visible.to(torch.uint8) * 255
+
+
+def click_inside_mask(mask: torch.Tensor, x: int, y: int, *, mode: str = "binary") -> bool:
+    """Return True if ``(x, y)`` lies inside the exported mask."""
+    value = int(mask[y, x].item())
+    if mode == "binary":
+        return value == 255
+    return value > 0
+
+
+def count_mask_pixels(mask: torch.Tensor, *, mode: str = "binary") -> int:
+    """Count foreground mask pixels (255 for binary, any value > 0 for soft)."""
+    if mode == "binary":
+        return int((mask == 255).sum().item())
+    return int((mask > 0).sum().item())

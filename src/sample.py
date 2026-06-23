@@ -13,7 +13,7 @@ import event_log
 from background import background_from_config, composite
 from camera import sample_random_camera
 from export import SampleRecord, export_sample
-from picker import object_mask, sample_click
+from picker import click_inside_mask, count_mask_pixels, object_mask, sample_click
 from render import render
 from render.sh import camera_position_from_viewmat
 from scene import build_random_scene
@@ -43,6 +43,8 @@ def generate_one_sample(
     render_cfg = config.get("render", {})
     sh_degree = int(render_cfg.get("sh_degree", 0))
     alpha_threshold = float(render_cfg.get("alpha_threshold", 0.5))
+    mask_mode = str(render_cfg.get("mask_mode", "binary"))
+    mask_weight_threshold = float(render_cfg.get("mask_weight_threshold", 0.05))
     max_camera_retries = int(config.get("generation", {}).get("max_camera_retries", 20))
 
     if verbose:
@@ -126,15 +128,20 @@ def generate_one_sample(
             x, y, clicked_object_id = sample_click(
                 out.alpha, out.object_id_map, alpha_threshold, rng
             )
-            mask = object_mask(out.object_weights, clicked_object_id)
-            mask_pixels = int((mask == 255).sum().item())
+            mask = object_mask(
+                out.object_weights,
+                clicked_object_id,
+                mode=mask_mode,
+                weight_threshold=mask_weight_threshold,
+            )
+            mask_pixels = count_mask_pixels(mask, mode=mask_mode)
             pick_detail = (
-                f"oid={clicked_object_id} @ ({x},{y}) · mask={mask_pixels:,}px"
+                f"oid={clicked_object_id} @ ({x},{y}) · mask={mask_pixels:,}px · {mask_mode}"
             )
             _vstatus(verbose, "pick", pick_detail)
             _vlog(verbose, f"[dim]pick[/] {pick_detail}")
 
-            if mask[y, x].item() != 255:
+            if not click_inside_mask(mask, x, y, mode=mask_mode):
                 raise ValueError("Click pixel not inside object mask")
 
             record = SampleRecord(

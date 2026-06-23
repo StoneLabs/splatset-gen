@@ -94,6 +94,56 @@ def test_transparent_fringe_excluded_from_mask() -> None:
     assert mask[fringe].max().item() == 0
 
 
+def test_soft_mask_preserves_transparent_fringe() -> None:
+    """Soft mode maps low dominant weights to grayscale, not hard zero."""
+    obj = make_object_blob(0, center=(0.0, 0.0, 0.0), opacity=0.95, seed=5)
+    width = height = 128
+    viewmat = look_at_viewmat(
+        eye=np.array([0.0, 0.0, 2.5], dtype=np.float64),
+        target=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+    )
+    k = intrinsics_from_fov(width, height, 60.0)
+    out = render(obj, viewmat, k, width, height)
+
+    fringe = (out.object_weights[:, :, 0] > MASK_WEIGHT_THRESHOLD) & (
+        out.object_weights[:, :, 0] < 0.5
+    ) & (out.object_id_map == 0)
+    assert fringe.sum() > 0
+
+    mask = object_mask(
+        out.object_weights,
+        clicked_object_id=0,
+        mode="soft",
+        weight_threshold=MASK_WEIGHT_THRESHOLD,
+    )
+    fringe_vals = mask[fringe]
+    assert fringe_vals.min().item() > 0
+    assert fringe_vals.max().item() < 255
+
+
+def test_soft_mask_zero_where_occluded() -> None:
+    rear = make_object_blob(0, center=(0.0, 0.0, 0.0), sh_dc=(1.0, 0.1, 0.1), seed=1)
+    front = make_object_blob(1, center=(0.0, 0.0, 0.35), sh_dc=(0.1, 1.0, 0.1), seed=2)
+    scene = concat_objects([rear, front])
+
+    width = height = 128
+    viewmat = look_at_viewmat(
+        eye=np.array([0.0, 0.0, 2.5], dtype=np.float64),
+        target=np.array([0.0, 0.0, 0.15], dtype=np.float64),
+    )
+    k = intrinsics_from_fov(width, height, 60.0)
+    out = render(scene, viewmat, k, width, height)
+
+    occluded_by_front = out.object_id_map == 1
+    rear_mask = object_mask(
+        out.object_weights,
+        clicked_object_id=0,
+        mode="soft",
+        weight_threshold=MASK_WEIGHT_THRESHOLD,
+    )
+    assert rear_mask[occluded_by_front].max().item() == 0
+
+
 def test_dominant_object_id_follows_accumulated_weight() -> None:
     """Dominant object id tracks highest accumulated compositing weight."""
     rear = make_object_blob(
