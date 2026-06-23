@@ -1,6 +1,26 @@
-# CPU Gaussian-splat training data generator
+# splat-dataset
 
-Generates synthetic click-to-segment datasets from 3D Gaussian Splatting PLY objects.
+CPU-only pipeline that generates synthetic **click-to-segment** training data from 3D Gaussian Splatting (3DGS) PLY objects.
+
+Each sample produces:
+
+| Output | Description |
+|--------|-------------|
+| **RGB image** | Scene render (multi-object splats composited over background) |
+| **Binary mask** | **Visible** portion of the clicked object only — occluded pixels are black |
+| **Click `(x, y)`** | Stored in `annotations.jsonl` |
+
+Object-level semantics: one PLY = one object instance. Masks are **modal** (not amodal): if object A is behind object B, A's mask is black where B covers it.
+
+---
+
+## Requirements
+
+- Python **3.12+**
+- [uv](https://docs.astral.sh/uv/)
+- 3DGS `.ply` files in `assets/ply/` (standard Inria format: `x,y,z`, `scale_*`, `rot_*`, `f_dc_*`, `opacity`, …)
+
+---
 
 ## Setup
 
@@ -8,67 +28,185 @@ Generates synthetic click-to-segment datasets from 3D Gaussian Splatting PLY obj
 uv sync --extra dev
 ```
 
-Requires Python 3.12+. PyTorch CPU wheel installed via `uv` (see `pyproject.toml`).
+PyTorch is installed from the CPU wheel index (see `pyproject.toml`). No CUDA required.
 
-Place 3DGS `.ply` files in `assets/ply/`.
+---
+
+## Generate a dataset
+
+Defaults: `assets/ply/`, `configs/default.yaml`, `outputs/run_001/`, 100 samples.
+
+```bash
+uv run scripts/generate_dataset.py
+```
+
+Shows a pre-flight plan and waits for **Enter**. Skip confirmation with `-y`:
+
+```bash
+uv run scripts/generate_dataset.py --output outputs/run2/ -n 7 -c configs/dev_fast.yaml --seed 42 -v -y
+```
+
+### Common flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--output` | `-o` | Output directory |
+| `--num-samples` | `-n` | Number of samples |
+| `--workers` | `-j` | Parallel workers (default: CPU count − 1) |
+| `--config` | `-c` | YAML config path |
+| `--seed` | | Master RNG seed |
+| `--verbose` | `-v` | Rasterizer progress in the Recent log panel |
+| `--yes` | `-y` | Skip confirmation prompt |
+| `--ply-dir` | | PLY input directory |
+| `-h` | | Help |
+
+Full help:
+
+```bash
+uv run scripts/generate_dataset.py -h
+```
+
+### Output layout
+
+```
+outputs/run2/
+├── config.yaml           # snapshot of config used
+├── images/000001.png     # composited RGB
+├── masks/000001.png      # object mask (L mode, 0 or 255)
+└── annotations.jsonl     # one JSON record per line
+```
+
+Example JSONL record:
+
+```json
+{
+  "id": "000001",
+  "image": "images/000001.png",
+  "mask": "masks/000001.png",
+  "point": [128, 256],
+  "object_id": 1,
+  "num_objects": 3,
+  "background": { "mode": "solid", "color": [0.1, 0.1, 0.1] },
+  "camera": { "width": 512, "height": 512, "fov_deg": 60.0, "viewmat": [...], "K": [...] },
+  "objects": [{ "object_id": 0, "ply": "Grape.ply", "transform": { ... } }]
+}
+```
+
+---
+
+## Configuration
+
+Configs live in `configs/`. Key sections:
+
+```yaml
+render:
+  width: 512
+  height: 512
+  alpha_threshold: 0.5
+  sh_degree: 0              # v1: DC color only
+
+background:
+  mode: "solid"
+  solid_color: [0.1, 0.1, 0.1]
+
+scene:
+  num_objects_min: 2
+  num_objects_max: 5
+  position_range: [-2.0, 2.0]
+  rotation_deg_max: 180
+  scale_jitter: [0.8, 1.2]
+
+camera:
+  fov_deg_range: [45, 75]
+  distance_range: [3.0, 8.0]
+  max_retries: 20
+
+generation:
+  max_camera_retries: 20
+  max_gaussians_per_object: 25000   # optional; random subset per PLY for testing
+```
+
+- **`configs/default.yaml`** — full-quality settings (no Gaussian cap by default).
+- **`configs/dev_fast.yaml`** — lower resolution + Gaussian cap for quick iteration.
+
+When `generation.max_gaussians_per_object` is set, each PLY load takes a **random subset** of that many Gaussians (reproducible per seed). Omit the key for full PLYs.
+
+---
 
 ## Debug render (single PLY)
 
-```bash
-PYTHONPATH=src python scripts/render_debug.py \
-  --ply assets/ply/Grape.ply \
-  --max-gaussians 8000 \
-  --width 512 --height 512 \
-  --verbose
-```
-
-Omit `--max-gaussians` to load the full PLY.
-
-## Generate dataset
-
-Run with no arguments to use defaults (`assets/ply`, `configs/default.yaml`):
+Verify a PLY renders correctly before generating a full dataset:
 
 ```bash
-PYTHONPATH=src python scripts/generate_dataset.py
+uv run scripts/render_debug.py --ply assets/ply/Grape.ply --verbose
 ```
 
-Shows a plan summary and waits for Enter. Use `-y` to skip confirmation.
+Omit `--max-gaussians` to load the entire PLY. Writes composited RGB and a foreground-only `_fg` PNG under `outputs/debug/`.
 
-```bash
-PYTHONPATH=src python scripts/generate_dataset.py -h
+---
 
-PYTHONPATH=src python scripts/generate_dataset.py \
-  -n 10 -j 1 -c configs/dev_fast.yaml -o outputs/test_run -y
+## How masks work
+
+Rendering produces an `object_id_map`: per pixel, the object ID of the **dominant visible** splat (front-to-back compositing). The click is sampled on foreground pixels; the mask is:
+
+```
+mask = (object_id_map == clicked_object_id)
 ```
 
-Gaussian cap for testing: set `generation.max_gaussians_per_object` in config (see `configs/dev_fast.yaml`) — loads a **random subset** per PLY. Omit for full-quality runs.
+Occluded regions of the clicked object receive the occluder's ID, so they stay black in the mask. No second render pass needed.
 
-Each sample writes:
-
-- `images/000001.png` — composited RGB
-- `masks/000001.png` — **visible-only** object mask (occluded regions black)
-- `annotations.jsonl` — click `(x, y)`, object id, camera, scene metadata
-
-Mask rule: `mask = (object_id_map == clicked_object_id)`. Occluder pixels get the front object's id in `object_id_map`, so rear-object masks are black where covered.
+---
 
 ## Tests
 
 ```bash
-PYTHONPATH=src pytest tests/ -v
+uv run pytest tests/ -v
 ```
+
+Includes PLY loading, camera math, single-object masks, and a synthetic two-object occlusion test.
+
+---
 
 ## Performance (CPU)
 
-| Setting | Rough expectation |
-|---|---|
-| 512×512, ~300k Gaussians, 1 worker | ~2–5 min/sample |
+Rough expectations on a typical desktop:
+
+| Setting | Time / sample |
+|---------|----------------|
+| 512×512, ~300k Gaussians, 1 worker | ~1–5 min |
+| 256×256 or capped Gaussians (`dev_fast`) | much faster |
 | 4 workers | ~4× throughput (memory dependent) |
-| 256×256 | ~4× faster |
 
-Use `generation.max_gaussians_per_object` in config for faster dev iteration.
+Correctness first; use `configs/dev_fast.yaml` or `max_gaussians_per_object` while iterating.
 
-## v1 limits
+---
 
-- CPU-only rasterizer (adapted from EasyGaussianSplatting)
-- SH degree 0 (DC color only)
-- Solid background only (`background.mode: solid`); image backgrounds are v2
+## Project layout
+
+```
+assets/ply/              # input 3DGS PLY objects
+configs/                 # YAML scene/render settings
+scripts/
+  generate_dataset.py    # main CLI
+  render_debug.py        # single-PLY debug render
+src/
+  ply_loader.py          # PLY → SceneGaussians
+  scene.py               # random multi-object placement
+  camera.py              # pinhole camera sampling
+  render/                # CPU splat rasterizer (EasyGS-derived)
+  picker.py              # click sampling + occlusion-aware mask
+  sample.py              # one-sample pipeline
+  parallel.py            # multiprocessing + live progress UI
+outputs/                 # generated datasets (gitignored)
+```
+
+---
+
+## v1 scope
+
+- CPU-only PyTorch rasterizer
+- SH degree 0 (DC color)
+- Solid background only (`background.mode: solid`)
+- Visible (modal) object masks with occlusion
+
+Not included: GPU rendering, background images, amodal masks, model training code.
