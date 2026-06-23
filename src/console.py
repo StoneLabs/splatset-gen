@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TextIO
 
 import click
 
@@ -35,6 +36,19 @@ console = Console()
 
 RECENT_LINES = 15
 BRAILLE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_RICH_TAG = re.compile(r"\[[^\]]*\]")
+
+
+def _worker_prefix_rich(worker_id: int) -> str:
+    return f"[purple]#{worker_id}[/] "
+
+
+def _worker_prefix_plain(worker_id: int) -> str:
+    return f"#{worker_id} "
+
+
+def _strip_rich_markup(text: str) -> str:
+    return _RICH_TAG.sub("", text)
 
 
 @dataclass
@@ -53,6 +67,7 @@ class ProgressTracker:
     num_samples: int
     workers: int
     verbose: bool = False
+    log_path: Path | None = None
     worker_states: dict[int, WorkerState] = field(default_factory=dict)
     completed: int = 0
     failed: int = 0
@@ -60,10 +75,14 @@ class ProgressTracker:
     recent: deque[str] = field(default_factory=lambda: deque(maxlen=RECENT_LINES))
     _progress: Progress = field(init=False, repr=False)
     _task_id: int = field(init=False, repr=False)
+    _log_file: TextIO | None = field(init=False, repr=False, default=None)
 
     def __post_init__(self) -> None:
         for i in range(self.workers):
             self.worker_states[i] = WorkerState()
+        if self.log_path is not None:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_file = self.log_path.open("a", encoding="utf-8")
         self._progress = Progress(
             SpinnerColumn(style="cyan"),
             TextColumn("[bold cyan]Overall"),
@@ -85,6 +104,18 @@ class ProgressTracker:
     def in_flight(self) -> int:
         return sum(1 for st in self.worker_states.values() if st.status == "working")
 
+    def close_log(self) -> None:
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None
+
+    def _record(self, worker_id: int, rich_body: str) -> None:
+        self.recent.append(_worker_prefix_rich(worker_id) + rich_body)
+        if self._log_file is not None:
+            plain = _worker_prefix_plain(worker_id) + _strip_rich_markup(rich_body)
+            self._log_file.write(plain + "\n")
+            self._log_file.flush()
+
     def on_start(self, worker_id: int, sample_id: str) -> None:
         st = self.worker_states[worker_id]
         st.status = "working"
@@ -100,10 +131,10 @@ class ProgressTracker:
         if error:
             st.status = "failed"
             self.failed += 1
-            self.recent.append(f"[red]✗[/] {sample_id}  {escape(error[:72])}")
+            self._record(worker_id, f"[red]✗[/] {sample_id}  {escape(error[:72])}")
         else:
             self.completed += 1
-            self.recent.append(f"[green]✓[/] {sample_id}  [dim]{elapsed:.1f}s[/]")
+            self._record(worker_id, f"[green]✓[/] {sample_id}  [dim]{elapsed:.1f}s[/]")
         st.status = "idle"
         st.sample_id = "—"
         st.elapsed = 0.0
@@ -123,8 +154,8 @@ class ProgressTracker:
             st.phase = phase
             st.detail = detail or "—"
 
-    def on_log(self, message: str) -> None:
-        self.recent.append(message)
+    def on_log(self, worker_id: int, message: str) -> None:
+        self._record(worker_id, message)
 
     def tick(self) -> None:
         now = time.perf_counter()
