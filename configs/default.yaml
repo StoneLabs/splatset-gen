@@ -19,6 +19,17 @@ render:
   # Higher values require f_rest_* in PLY and are not implemented yet.
   sh_degree: 0
 
+  # Object mask output (masks/{id}.png, grayscale L):
+  #   binary — 0 or 255; crisp labels for standard click-to-segment training
+  #   soft   — 0–255 proportional to splat compositing weight on dominant pixels;
+  #            preserves semi-transparent edges; occluded regions stay 0
+  mask_mode: binary
+
+  # Per-object compositing weight cutoff (same signal as rasterizer object_weights).
+  #   binary — pixel must exceed this to become 255
+  #   soft   — values below this are zeroed as noise; dominant pixels above map to 1–255
+  mask_weight_threshold: 0.05
+
 background:
   # Compositing mode after the splat pass.
   #   solid — flat color everywhere splats do not cover

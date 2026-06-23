@@ -3,6 +3,8 @@ render:
   height: 256
   alpha_threshold: 0.5
   sh_degree: 0
+  mask_mode: binary
+  mask_weight_threshold: 0.05
 
 background:
   mode: "image"
