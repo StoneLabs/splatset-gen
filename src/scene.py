@@ -146,9 +146,6 @@ def build_random_scene(
     metadata: list[dict[str, Any]] = []
 
     for object_id, ply_path in enumerate(chosen):
-        if verbose and event_log.is_active():
-            event_log.worker_status("scene", f"load {ply_path.name}")
-
         n_total: int | None = None
         if verbose and max_g is not None:
             n_total = len(PlyData.read(str(ply_path))["vertex"])

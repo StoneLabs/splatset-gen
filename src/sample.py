@@ -14,6 +14,7 @@ from background import background_from_config, composite
 from camera import sample_random_camera
 from export import SampleRecord, export_sample
 from picker import click_inside_mask, count_mask_pixels, object_mask, sample_click
+from ply_loader import release_acquired
 from render import render
 from render.sh import camera_position_from_viewmat
 from scene import build_random_scene
@@ -41,7 +42,6 @@ def generate_one_sample(
     """Build scene, render, pick click, write occlusion-aware mask + RGB."""
     event_log.set_sample(sample_id)
     render_cfg = config.get("render", {})
-    sh_degree = int(render_cfg.get("sh_degree", 0))
     alpha_threshold = float(render_cfg.get("alpha_threshold", 0.5))
     mask_mode = str(render_cfg.get("mask_mode", "binary"))
     mask_weight_threshold = float(render_cfg.get("mask_weight_threshold", 0.05))
@@ -51,6 +51,42 @@ def generate_one_sample(
         pool_workers = int(config.get("_workers", 1))
         torch_threads = max(1, (os.cpu_count() or 1) // max(pool_workers, 1))
         _vlog(verbose, f"[dim]worker[/] {torch_threads} torch threads")
+
+    try:
+        return _generate_one_sample_body(
+            ply_paths,
+            config,
+            rng,
+            output_dir,
+            sample_id,
+            verbose=verbose,
+            project_root=project_root,
+            render_cfg=render_cfg,
+            alpha_threshold=alpha_threshold,
+            mask_mode=mask_mode,
+            mask_weight_threshold=mask_weight_threshold,
+            max_camera_retries=max_camera_retries,
+        )
+    finally:
+        release_acquired()
+
+
+def _generate_one_sample_body(
+    ply_paths: list[Path],
+    config: dict[str, Any],
+    rng: np.random.Generator,
+    output_dir: Path,
+    sample_id: str,
+    *,
+    verbose: bool,
+    project_root: Path | None,
+    render_cfg: dict[str, Any],
+    alpha_threshold: float,
+    mask_mode: str,
+    mask_weight_threshold: float,
+    max_camera_retries: int,
+) -> SampleRecord:
+    sh_degree = int(render_cfg.get("sh_degree", 0))
 
     _vstatus(verbose, "scene", "building…")
     scene, objects_meta = build_random_scene(ply_paths, config, rng, verbose=verbose)
@@ -175,4 +211,4 @@ def generate_one_sample(
             _vlog(verbose, f"[yellow]retry[/] {exc}")
             continue
 
-    raise RuntimeError(f"Failed to generate sample after retries: {last_error}")
+    raise RuntimeError(f"Failed to generate sample after retries: {last_error}") from last_error

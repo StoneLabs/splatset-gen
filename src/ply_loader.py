@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
+import event_log
 from plyfile import PlyData, PlyElement
 
 REQUIRED_FIELDS = (
@@ -121,6 +123,62 @@ def format_extent(stats: PlyLoadStats) -> str:
     return f"{stats.max_extent_before:.3f}→{stats.max_extent_after:.3f}"
 
 
+_CACHE_PROXY: Any = None
+_ACQUIRED_PATHS: list[str] = []
+_ACQUIRED_SHMS: list[Any] = []
+
+
+def bind_cache(cache_proxy: Any) -> None:
+    global _CACHE_PROXY
+    _CACHE_PROXY = cache_proxy
+
+
+def clear_cache_binding() -> None:
+    global _CACHE_PROXY, _ACQUIRED_PATHS, _ACQUIRED_SHMS
+    _CACHE_PROXY = None
+    _ACQUIRED_PATHS = []
+    _ACQUIRED_SHMS = []
+
+
+def release_acquired() -> None:
+    """Release all PLY paths acquired during the current sample."""
+    global _ACQUIRED_PATHS, _ACQUIRED_SHMS
+    for shm in _ACQUIRED_SHMS:
+        try:
+            shm.close()
+        except (BufferError, OSError):
+            pass
+    _ACQUIRED_SHMS = []
+    if _CACHE_PROXY is None or not _ACQUIRED_PATHS:
+        _ACQUIRED_PATHS = []
+        return
+    paths = list(_ACQUIRED_PATHS)
+    _ACQUIRED_PATHS = []
+    _CACHE_PROXY.release_paths(paths, event_log.worker_slot())
+
+
+def _apply_max_gaussians(
+    gaussians: SceneGaussians,
+    max_gaussians: int | None,
+    rng: np.random.Generator | None,
+) -> SceneGaussians:
+    if max_gaussians is None or gaussians.num_gaussians <= max_gaussians:
+        return gaussians
+    if rng is None:
+        rng = np.random.default_rng()
+    pick = rng.choice(gaussians.num_gaussians, size=max_gaussians, replace=False)
+    idx = torch.from_numpy(pick)
+    return SceneGaussians(
+        means=gaussians.means[idx],
+        quats=gaussians.quats[idx],
+        scales=gaussians.scales[idx],
+        opacities=gaussians.opacities[idx],
+        sh_dc=gaussians.sh_dc[idx],
+        sh_rest=gaussians.sh_rest[idx],
+        object_ids=gaussians.object_ids[idx],
+    )
+
+
 def load_ply(
     path: str | Path,
     max_gaussians: int | None = None,
@@ -141,6 +199,29 @@ def load_ply(
     if not path.exists():
         raise FileNotFoundError(path)
 
+    if _CACHE_PROXY is not None:
+        from ply_cache import gaussians_from_handle
+
+        resolved = str(path.resolve())
+        if not _CACHE_PROXY.is_resident(resolved) and event_log.is_active():
+            event_log.worker_status("scene", f"waiting for load {path.name}")
+        handle = _CACHE_PROXY.acquire(resolved, event_log.worker_slot())
+        _ACQUIRED_PATHS.append(resolved)
+        gaussians, stats, shms = gaussians_from_handle(handle)
+        _ACQUIRED_SHMS.extend(shms)
+        return _apply_max_gaussians(gaussians, max_gaussians, rng), stats
+
+    if event_log.is_active():
+        event_log.worker_status("scene", f"waiting for load {path.name}")
+    return _load_ply_from_disk(path, max_gaussians=max_gaussians, rng=rng)
+
+
+def _load_ply_from_disk(
+    path: Path,
+    max_gaussians: int | None = None,
+    rng: np.random.Generator | None = None,
+) -> tuple[SceneGaussians, PlyLoadStats]:
+    """Load PLY from disk without using the shared cache."""
     ply = PlyData.read(str(path))
     if "vertex" not in ply:
         raise ValueError(f"{path} has no vertex element")
