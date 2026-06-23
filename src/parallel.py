@@ -90,6 +90,12 @@ def _drain_queue(queue: Any, tracker: ProgressTracker) -> None:
         elif kind == "log":
             _, _worker_id, message = msg
             tracker.on_log(message)
+        elif kind == "render":
+            _, worker_id, pct = msg
+            tracker.on_render(worker_id, pct)
+        elif kind == "status":
+            _, worker_id, phase, detail = msg
+            tracker.on_status(worker_id, phase, detail)
 
 
 def _run_with_live(
@@ -152,7 +158,7 @@ def generate_dataset_parallel(
         for i in range(num_samples)
     ]
 
-    tracker = ProgressTracker(num_samples=num_samples, workers=workers)
+    tracker = ProgressTracker(num_samples=num_samples, workers=workers, verbose=verbose)
     t0 = time.perf_counter()
 
     if not show_progress:

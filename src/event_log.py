@@ -40,3 +40,13 @@ def log(message: str) -> None:
         emit("log", _worker_slot, f"[cyan]{_sample_id}[/]  {message}")
     else:
         emit("log", _worker_slot, message)
+
+
+def render_progress(pct: float) -> None:
+    """Report rasterizer completion percentage for the live worker table."""
+    emit("render", _worker_slot, float(pct))
+
+
+def worker_status(phase: str, detail: str = "") -> None:
+    """Update worker table phase/detail (verbose UI)."""
+    emit("status", _worker_slot, phase, detail)
