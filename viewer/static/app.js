@@ -1,12 +1,15 @@
 const STORAGE_KEYS = {
   rowRatio: "viewer-layout-row-ratio",
   colRatio: "viewer-layout-col-ratio",
+  topCol1: "viewer-layout-top-col1",
+  topCol2: "viewer-layout-top-col2",
   fitToPanel: "viewer-fit-to-panel",
+  maskOpacity: "viewer-mask-opacity",
 };
 
 const LAYOUT_LIMITS = {
-  min: 0.18,
-  max: 0.82,
+  min: 0.15,
+  max: 0.7,
 };
 
 const state = {
@@ -17,6 +20,10 @@ const state = {
   fitToPanel: true,
   rowRatio: 0.58,
   colRatio: 0.5,
+  topCol1: 0.33,
+  topCol2: 0.34,
+  maskOpacity: 0.5,
+  imageCache: null,
 };
 
 const els = {
@@ -25,6 +32,7 @@ const els = {
   rowBottom: document.getElementById("row-bottom"),
   splitterRow: document.getElementById("splitter-row"),
   splitterCol: document.getElementById("splitter-col"),
+  splitterColOverlay: document.getElementById("splitter-col-overlay"),
   splitterColBottom: document.getElementById("splitter-col-bottom"),
   datasetPath: document.getElementById("dataset-path"),
   sampleIndex: document.getElementById("sample-index"),
@@ -37,6 +45,10 @@ const els = {
   renderCanvas: document.getElementById("render-canvas"),
   maskPanel: document.getElementById("mask-panel"),
   maskImage: document.getElementById("mask-image"),
+  overlayPanel: document.getElementById("overlay-panel"),
+  overlayCanvas: document.getElementById("overlay-canvas"),
+  maskOpacity: document.getElementById("mask-opacity"),
+  maskOpacityLabel: document.getElementById("mask-opacity-label"),
   annotationJson: document.getElementById("annotation-json"),
   configYaml: document.getElementById("config-yaml"),
   fitToPanel: document.getElementById("fit-to-panel"),
@@ -52,10 +64,23 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function getRowPanels(row) {
+  return [...row.children].filter((child) => child.classList.contains("panel"));
+}
+
+function getVerticalSplitterWidth(row) {
+  return [...row.children]
+    .filter((child) => child.classList.contains("splitter-v"))
+    .reduce((total, splitter) => total + splitter.offsetWidth, 0);
+}
+
 function loadLayoutPrefs() {
   const row = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.rowRatio));
   const col = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.colRatio));
+  const topCol1 = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.topCol1));
+  const topCol2 = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.topCol2));
   const fit = localStorage.getItem(STORAGE_KEYS.fitToPanel);
+  const maskOpacity = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.maskOpacity));
 
   if (!Number.isNaN(row)) {
     state.rowRatio = clamp(row, LAYOUT_LIMITS.min, LAYOUT_LIMITS.max);
@@ -63,15 +88,40 @@ function loadLayoutPrefs() {
   if (!Number.isNaN(col)) {
     state.colRatio = clamp(col, LAYOUT_LIMITS.min, LAYOUT_LIMITS.max);
   }
+  if (!Number.isNaN(topCol1)) {
+    state.topCol1 = topCol1;
+  }
+  if (!Number.isNaN(topCol2)) {
+    state.topCol2 = topCol2;
+  }
   if (fit !== null) {
     state.fitToPanel = fit === "true";
+  }
+  if (!Number.isNaN(maskOpacity)) {
+    state.maskOpacity = clamp(maskOpacity, 0, 1);
+  }
+
+  normalizeTopColumns();
+}
+
+function normalizeTopColumns() {
+  state.topCol1 = clamp(state.topCol1, LAYOUT_LIMITS.min, LAYOUT_LIMITS.max);
+  state.topCol2 = clamp(state.topCol2, LAYOUT_LIMITS.min, LAYOUT_LIMITS.max);
+  const maxSecond = 1 - state.topCol1 - LAYOUT_LIMITS.min;
+  state.topCol2 = clamp(state.topCol2, LAYOUT_LIMITS.min, maxSecond);
+  const overflow = state.topCol1 + state.topCol2 - (1 - LAYOUT_LIMITS.min);
+  if (overflow > 0) {
+    state.topCol2 -= overflow;
   }
 }
 
 function saveLayoutPrefs() {
   localStorage.setItem(STORAGE_KEYS.rowRatio, String(state.rowRatio));
   localStorage.setItem(STORAGE_KEYS.colRatio, String(state.colRatio));
+  localStorage.setItem(STORAGE_KEYS.topCol1, String(state.topCol1));
+  localStorage.setItem(STORAGE_KEYS.topCol2, String(state.topCol2));
   localStorage.setItem(STORAGE_KEYS.fitToPanel, String(state.fitToPanel));
+  localStorage.setItem(STORAGE_KEYS.maskOpacity, String(state.maskOpacity));
 }
 
 function applyLayout() {
@@ -83,20 +133,30 @@ function applyLayout() {
   els.rowTop.style.flex = `${topWeight} 1 0%`;
   els.rowBottom.style.flex = `${bottomWeight} 1 0%`;
 
-  for (const row of [els.rowTop, els.rowBottom]) {
-    const [leftPanel, , rightPanel] = row.children;
-    leftPanel.style.flex = `${leftWeight} 1 0%`;
-    rightPanel.style.flex = `${rightWeight} 1 0%`;
-  }
+  const topPanels = getRowPanels(els.rowTop);
+  const topCol3 = 1 - state.topCol1 - state.topCol2;
+  topPanels[0].style.flex = `${state.topCol1} 1 0%`;
+  topPanels[1].style.flex = `${state.topCol2} 1 0%`;
+  topPanels[2].style.flex = `${topCol3} 1 0%`;
+
+  const bottomPanels = getRowPanels(els.rowBottom);
+  bottomPanels[0].style.flex = `${leftWeight} 1 0%`;
+  bottomPanels[1].style.flex = `${rightWeight} 1 0%`;
 }
 
 function applyFitMode() {
   const modeClass = state.fitToPanel ? "fit-mode" : "native-mode";
-  for (const panel of [els.renderPanel, els.maskPanel]) {
+  for (const panel of [els.renderPanel, els.maskPanel, els.overlayPanel]) {
     panel.classList.remove("fit-mode", "native-mode");
     panel.classList.add(modeClass);
   }
   els.fitToPanel.checked = state.fitToPanel;
+}
+
+function applyMaskOpacityUi() {
+  const percent = Math.round(state.maskOpacity * 100);
+  els.maskOpacity.value = String(percent);
+  els.maskOpacityLabel.textContent = `${percent}%`;
 }
 
 function setStatus(text) {
@@ -158,19 +218,78 @@ function loadImage(url) {
   });
 }
 
-async function renderImageWithCross(imagePath, point) {
-  const url = `/media/${imagePath}?t=${encodeURIComponent(state.index)}`;
-  const img = await loadImage(url);
+async function renderImageWithCross(rgbImage, point) {
   const canvas = els.renderCanvas;
   const ctx = canvas.getContext("2d");
 
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
+  canvas.width = rgbImage.naturalWidth;
+  canvas.height = rgbImage.naturalHeight;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(img, 0, 0);
+  ctx.drawImage(rgbImage, 0, 0);
 
   const [x, y] = point;
   drawCross(ctx, x, y, canvas.width, canvas.height);
+}
+
+function renderMaskOverlay(rgbImage, maskImage, opacity) {
+  const canvas = els.overlayCanvas;
+  const ctx = canvas.getContext("2d");
+  const width = rgbImage.naturalWidth;
+  const height = rgbImage.naturalHeight;
+
+  canvas.width = width;
+  canvas.height = height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(rgbImage, 0, 0);
+
+  const maskCanvas = document.createElement("canvas");
+  maskCanvas.width = width;
+  maskCanvas.height = height;
+  const maskCtx = maskCanvas.getContext("2d");
+  maskCtx.drawImage(maskImage, 0, 0);
+
+  const maskPixels = maskCtx.getImageData(0, 0, width, height);
+  const overlayPixels = maskCtx.createImageData(width, height);
+  const alphaScale = opacity * 255;
+
+  for (let i = 0; i < maskPixels.data.length; i += 4) {
+    const maskValue = maskPixels.data[i] / 255;
+    if (maskValue <= 0) {
+      continue;
+    }
+    overlayPixels.data[i] = 255;
+    overlayPixels.data[i + 1] = 0;
+    overlayPixels.data[i + 2] = 0;
+    overlayPixels.data[i + 3] = Math.round(maskValue * alphaScale);
+  }
+
+  maskCtx.putImageData(overlayPixels, 0, 0);
+  ctx.drawImage(maskCanvas, 0, 0);
+}
+
+async function loadSampleImages(imagePath, maskPath) {
+  const cacheKey = `${state.index}:${imagePath}:${maskPath}`;
+  if (state.imageCache?.key === cacheKey) {
+    return state.imageCache;
+  }
+
+  const rgbUrl = `/media/${imagePath}?t=${encodeURIComponent(state.index)}`;
+  const maskUrl = `/media/${maskPath}?t=${encodeURIComponent(state.index)}`;
+  const [rgbImage, maskImage] = await Promise.all([loadImage(rgbUrl), loadImage(maskUrl)]);
+
+  state.imageCache = {
+    key: cacheKey,
+    rgbImage,
+    maskImage,
+  };
+  return state.imageCache;
+}
+
+function refreshOverlay() {
+  if (!state.imageCache) {
+    return;
+  }
+  renderMaskOverlay(state.imageCache.rgbImage, state.imageCache.maskImage, state.maskOpacity);
 }
 
 async function showSample(index) {
@@ -187,6 +306,7 @@ async function showSample(index) {
     const payload = await fetchJson(`/api/sample/index/${clamped}`);
     const record = payload.record;
     state.index = payload.index;
+    state.imageCache = null;
 
     els.sampleIndex.value = String(state.index);
     els.sampleId.value = record.id;
@@ -196,8 +316,10 @@ async function showSample(index) {
     els.clickLabel.textContent = `point [${x}, ${y}]`;
     els.objectLabel.textContent = `object ${record.object_id} / ${record.num_objects}`;
 
-    await renderImageWithCross(record.image, record.point);
+    const images = await loadSampleImages(record.image, record.mask);
+    renderImageWithCross(images.rgbImage, record.point);
     els.maskImage.src = `/media/${record.mask}?t=${state.index}`;
+    renderMaskOverlay(images.rgbImage, images.maskImage, state.maskOpacity);
     els.annotationJson.textContent = JSON.stringify(record, null, 2);
 
     setStatus(`Sample ${state.index + 1} · id ${record.id}`);
@@ -224,12 +346,13 @@ async function jumpToId(sampleId) {
 }
 
 function setupSplitters() {
-  bindRowSplitter(els.splitterRow, els.workspace, els.rowTop);
-  bindColumnSplitter(els.splitterCol, els.rowTop);
-  bindColumnSplitter(els.splitterColBottom, els.rowBottom);
+  bindRowSplitter(els.splitterRow, els.workspace);
+  bindTopColumnSplitter(els.splitterCol, 0);
+  bindTopColumnSplitter(els.splitterColOverlay, 1);
+  bindBottomColumnSplitter(els.splitterColBottom, els.rowBottom);
 }
 
-function bindRowSplitter(splitter, container, topRow) {
+function bindRowSplitter(splitter, container) {
   startDrag(splitter, (event) => {
     const rect = container.getBoundingClientRect();
     const splitterHeight = els.splitterRow.offsetHeight;
@@ -245,11 +368,35 @@ function bindRowSplitter(splitter, container, topRow) {
   });
 }
 
-function bindColumnSplitter(splitter, row) {
+function bindTopColumnSplitter(splitter, splitterIndex) {
+  startDrag(splitter, (event) => {
+    const row = els.rowTop;
+    const rect = row.getBoundingClientRect();
+    const available = rect.width - getVerticalSplitterWidth(row);
+    if (available <= 0) {
+      return;
+    }
+
+    const x = (event.clientX ?? event.touches?.[0]?.clientX ?? 0) - rect.left;
+    const ratio = clamp(x / available, LAYOUT_LIMITS.min, 1 - 2 * LAYOUT_LIMITS.min);
+
+    if (splitterIndex === 0) {
+      state.topCol1 = clamp(ratio, LAYOUT_LIMITS.min, state.topCol1 + state.topCol2 - LAYOUT_LIMITS.min);
+    } else {
+      const combined = clamp(ratio, state.topCol1 + LAYOUT_LIMITS.min, 1 - LAYOUT_LIMITS.min);
+      state.topCol2 = combined - state.topCol1;
+    }
+
+    normalizeTopColumns();
+    applyLayout();
+    saveLayoutPrefs();
+  });
+}
+
+function bindBottomColumnSplitter(splitter, row) {
   startDrag(splitter, (event) => {
     const rect = row.getBoundingClientRect();
-    const splitterWidth = splitter.offsetWidth;
-    const available = rect.width - splitterWidth;
+    const available = rect.width - getVerticalSplitterWidth(row);
     if (available <= 0) {
       return;
     }
@@ -304,6 +451,7 @@ async function init() {
   loadLayoutPrefs();
   applyLayout();
   applyFitMode();
+  applyMaskOpacityUi();
   setupSplitters();
 
   try {
@@ -353,6 +501,13 @@ els.sampleId.addEventListener("keydown", (event) => {
 els.fitToPanel.addEventListener("change", () => {
   state.fitToPanel = els.fitToPanel.checked;
   applyFitMode();
+  saveLayoutPrefs();
+});
+
+els.maskOpacity.addEventListener("input", () => {
+  state.maskOpacity = Number.parseInt(els.maskOpacity.value, 10) / 100;
+  applyMaskOpacityUi();
+  refreshOverlay();
   saveLayoutPrefs();
 });
 
