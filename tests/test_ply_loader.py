@@ -12,7 +12,7 @@ from ply_loader import SceneGaussians, load_ply, write_synthetic_ply
 
 def test_load_synthetic_ply(tmp_path: Path) -> None:
     ply_path = write_synthetic_ply(tmp_path / "object.ply", num_gaussians=8)
-    scene = load_ply(ply_path)
+    scene, _stats = load_ply(ply_path)
 
     assert isinstance(scene, SceneGaussians)
     assert scene.num_gaussians == 8
@@ -28,7 +28,7 @@ def test_load_synthetic_ply(tmp_path: Path) -> None:
 
 def test_activations_in_valid_ranges(tmp_path: Path) -> None:
     ply_path = write_synthetic_ply(tmp_path / "object.ply", num_gaussians=4)
-    scene = load_ply(ply_path)
+    scene, _stats = load_ply(ply_path)
 
     opacities = scene.opacities.numpy()
     assert np.all(opacities > 0.0)
@@ -43,11 +43,24 @@ def test_activations_in_valid_ranges(tmp_path: Path) -> None:
 
 def test_bounds(tmp_path: Path) -> None:
     ply_path = write_synthetic_ply(tmp_path / "object.ply", num_gaussians=16)
-    scene = load_ply(ply_path)
+    scene, _stats = load_ply(ply_path)
     lo, hi = scene.bounds()
     assert lo.shape == (3,)
     assert hi.shape == (3,)
     assert np.all(lo <= hi)
+
+
+def test_normalize_to_unit_extent(tmp_path: Path) -> None:
+    ply_path = write_synthetic_ply(tmp_path / "object.ply", num_gaussians=64)
+    scene, stats = load_ply(ply_path)
+    lo, hi = scene.bounds()
+    extent = hi - lo
+    center = (lo + hi) / 2.0
+
+    assert stats.max_extent_before > 0.0
+    assert stats.max_extent_after == pytest.approx(1.0, rel=1e-5, abs=1e-5)
+    assert extent.max() == pytest.approx(1.0, rel=1e-5, abs=1e-5)
+    np.testing.assert_allclose(center, 0.0, atol=1e-5)
 
 
 def test_missing_fields_raise(tmp_path: Path) -> None:
@@ -81,9 +94,9 @@ def test_max_gaussians_random_subsample(tmp_path: Path) -> None:
     rng_b = np.random.default_rng(0)
     rng_c = np.random.default_rng(1)
 
-    sub_a = load_ply(ply_path, max_gaussians=8, rng=rng_a)
-    sub_b = load_ply(ply_path, max_gaussians=8, rng=rng_b)
-    sub_c = load_ply(ply_path, max_gaussians=8, rng=rng_c)
+    sub_a, _ = load_ply(ply_path, max_gaussians=8, rng=rng_a)
+    sub_b, _ = load_ply(ply_path, max_gaussians=8, rng=rng_b)
+    sub_c, _ = load_ply(ply_path, max_gaussians=8, rng=rng_c)
 
     assert sub_a.num_gaussians == 8
     np.testing.assert_allclose(sub_a.means.numpy(), sub_b.means.numpy())

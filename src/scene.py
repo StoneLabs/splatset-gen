@@ -10,7 +10,7 @@ import torch
 from plyfile import PlyData
 
 import event_log
-from ply_loader import SceneGaussians, load_ply
+from ply_loader import SceneGaussians, format_extent, load_ply
 
 
 def _euler_matrix_xyz(rx: float, ry: float, rz: float) -> np.ndarray:
@@ -153,7 +153,7 @@ def build_random_scene(
         if verbose and max_g is not None:
             n_total = len(PlyData.read(str(ply_path))["vertex"])
 
-        obj = load_ply(ply_path, max_gaussians=max_g, rng=rng)
+        obj, load_stats = load_ply(ply_path, max_gaussians=max_g, rng=rng)
         n_loaded = obj.num_gaussians
 
         if verbose and event_log.is_active():
@@ -161,19 +161,11 @@ def build_random_scene(
                 count_label = f"{n_loaded:,}/{n_total:,} gaussians (subset)"
             else:
                 count_label = f"{n_loaded:,} gaussians"
-            event_log.log(f"[dim]ply[/] oid={object_id} {ply_path.name} · {count_label}")
-
-        lo, hi = obj.bounds()
-        center = torch.from_numpy(((lo + hi) / 2.0).astype(np.float32))
-        obj = SceneGaussians(
-            means=obj.means - center,
-            quats=obj.quats,
-            scales=obj.scales,
-            opacities=obj.opacities,
-            sh_dc=obj.sh_dc,
-            sh_rest=obj.sh_rest,
-            object_ids=obj.object_ids,
-        )
+            extent_label = format_extent(load_stats)
+            event_log.log(
+                f"[dim]ply[/] oid={object_id} {ply_path.name} · {count_label} · "
+                f"extent {extent_label}"
+            )
 
         placement = rng.uniform(pos_range[0], pos_range[1], size=3).astype(np.float32)
         euler = np.deg2rad(rng.uniform(-rot_max, rot_max, size=3))
