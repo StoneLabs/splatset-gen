@@ -1,28 +1,79 @@
+# splat-dataset generation config
+# Used by: scripts/generate_dataset.py (copied to output/config.yaml per run)
+# Paths in image_dir are relative to the project root unless absolute.
+#
+# PLY loading (not configured here): each .ply is centered and scaled so its
+# longest bounding-box axis is 1 unit before scene placement.
+
 render:
+  # Output image size in pixels (also used for camera intrinsics).
   width: 512
   height: 512
+
+  # Minimum splat alpha for a pixel to count as foreground.
+  # Used for: rejecting empty renders, sampling random click points (x, y).
+  # Must be in (0, 1). Higher → stricter “visible object” threshold.
   alpha_threshold: 0.5
+
+  # Spherical-harmonics color degree. v1 supports 0 only (DC / flat RGB per Gaussian).
+  # Higher values require f_rest_* in PLY and are not implemented yet.
   sh_degree: 0
 
 background:
+  # Compositing mode after the splat pass.
+  #   solid — flat color everywhere splats do not cover
+  #   image — random file from image_dir (requires RNG per sample)
   mode: "image"
+
+  # Directory of background images (.jpg, .png, .webp, …).
+  # One image is chosen at random per sample when mode is "image".
   image_dir: "assets/backgrounds/"
+
+  # How to fit a background image to render width×height:
+  #   crop      — scale to cover, center-crop (default)
+  #   letterbox — scale to fit, pad with solid_color
+  #   stretch   — non-uniform scale to exact size
   resize_mode: "crop"
+
+  # RGB in [0, 1]. Used for mode "solid" and as letterbox pad color for mode "image".
   solid_color: [0.1, 0.1, 0.1]
 
 scene:
+  # Number of PLY objects placed per sample (inclusive range, uniform random).
+  # Each slot picks a random file from the --ply-dir pool (with replacement).
   num_objects_min: 2
   num_objects_max: 5
+
+  # Random translation per object, applied independently on X, Y, Z (world units).
+  # Objects are already centered at origin after load; this spreads them in the scene.
   position_range: [-2.0, 2.0]
+
+  # Max absolute Euler rotation (degrees) per axis, sampled uniformly in [-max, +max].
   rotation_deg_max: 180
+
+  # Uniform random scale multiplier per object, applied after unit-extent normalization.
   scale_jitter: [0.8, 1.2]
 
 camera:
+  # Vertical field of view (degrees), sampled uniformly per camera attempt.
   fov_deg_range: [45, 75]
+
+  # Camera distance from scene bbox center (world units), sampled uniformly.
+  # Actual distance is at least 1.5× the scene radius so small scenes stay framed.
   distance_range: [3.0, 8.0]
+
+  # Attempts to sample a camera whose projected scene overlaps the image.
+  # Used inside sample_random_camera(); raises if all attempts fail.
   max_retries: 20
 
+  # Optional: random offset added to look-at target (scene centroid). Default 0 if omitted.
+  # look_at_jitter: 0.0
+
 generation:
+  # Outer retry loop per sample: re-randomize camera (same scene) on failure.
+  # Failures include: no valid camera, alpha too low, click/mask sanity checks.
   max_camera_retries: 20
-  # Optional testing cap — random subset of N Gaussians per PLY; omit for full quality:
+
+  # Optional speed/testing cap: load at most N Gaussians per PLY (random subset, seeded).
+  # Omit entirely for full-quality loads of every Gaussian in each file.
   # max_gaussians_per_object: 8000
