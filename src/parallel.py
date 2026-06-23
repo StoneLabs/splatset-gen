@@ -88,8 +88,8 @@ def _drain_queue(queue: Any, tracker: ProgressTracker) -> None:
             _, worker_id, sample_id, elapsed, error = msg
             tracker.on_done(worker_id, sample_id, elapsed, error)
         elif kind == "log":
-            _, _worker_id, message = msg
-            tracker.on_log(message)
+            _, worker_id, message = msg
+            tracker.on_log(worker_id, message)
         elif kind == "render":
             _, worker_id, pct = msg
             tracker.on_render(worker_id, pct)
@@ -158,7 +158,12 @@ def generate_dataset_parallel(
         for i in range(num_samples)
     ]
 
-    tracker = ProgressTracker(num_samples=num_samples, workers=workers, verbose=verbose)
+    tracker = ProgressTracker(
+        num_samples=num_samples,
+        workers=workers,
+        verbose=verbose,
+        log_path=output_dir / "generator.log",
+    )
     t0 = time.perf_counter()
 
     if not show_progress:
@@ -192,10 +197,13 @@ def generate_dataset_parallel(
         ) as pool:
             return list(pool.imap_unordered(_worker, tasks))
 
-    if workers <= 1:
-        results = _run_with_live(tracker, progress_queue, run_sequential)
-    else:
-        results = _run_with_live(tracker, progress_queue, run_pool)
+    try:
+        if workers <= 1:
+            results = _run_with_live(tracker, progress_queue, run_sequential)
+        else:
+            results = _run_with_live(tracker, progress_queue, run_pool)
+    finally:
+        tracker.close_log()
 
     elapsed = time.perf_counter() - t0
     print_summary(output_dir, tracker.completed, tracker.failed, elapsed)
