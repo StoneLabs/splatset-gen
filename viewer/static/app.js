@@ -1,11 +1,31 @@
+const STORAGE_KEYS = {
+  rowRatio: "viewer-layout-row-ratio",
+  colRatio: "viewer-layout-col-ratio",
+  fitToPanel: "viewer-fit-to-panel",
+};
+
+const LAYOUT_LIMITS = {
+  min: 0.18,
+  max: 0.82,
+};
+
 const state = {
   total: 0,
   index: 0,
   configYaml: "",
   loading: false,
+  fitToPanel: true,
+  rowRatio: 0.58,
+  colRatio: 0.5,
 };
 
 const els = {
+  workspace: document.getElementById("workspace"),
+  rowTop: document.getElementById("row-top"),
+  rowBottom: document.getElementById("row-bottom"),
+  splitterRow: document.getElementById("splitter-row"),
+  splitterCol: document.getElementById("splitter-col"),
+  splitterColBottom: document.getElementById("splitter-col-bottom"),
   datasetPath: document.getElementById("dataset-path"),
   sampleIndex: document.getElementById("sample-index"),
   sampleId: document.getElementById("sample-id"),
@@ -13,10 +33,13 @@ const els = {
   statusText: document.getElementById("status-text"),
   clickLabel: document.getElementById("click-label"),
   objectLabel: document.getElementById("object-label"),
+  renderPanel: document.getElementById("render-panel"),
   renderCanvas: document.getElementById("render-canvas"),
+  maskPanel: document.getElementById("mask-panel"),
   maskImage: document.getElementById("mask-image"),
   annotationJson: document.getElementById("annotation-json"),
   configYaml: document.getElementById("config-yaml"),
+  fitToPanel: document.getElementById("fit-to-panel"),
   btnFirst: document.getElementById("btn-first"),
   btnPrev: document.getElementById("btn-prev"),
   btnNext: document.getElementById("btn-next"),
@@ -24,6 +47,57 @@ const els = {
   btnCopyJson: document.getElementById("btn-copy-json"),
   btnCopyConfig: document.getElementById("btn-copy-config"),
 };
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function loadLayoutPrefs() {
+  const row = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.rowRatio));
+  const col = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.colRatio));
+  const fit = localStorage.getItem(STORAGE_KEYS.fitToPanel);
+
+  if (!Number.isNaN(row)) {
+    state.rowRatio = clamp(row, LAYOUT_LIMITS.min, LAYOUT_LIMITS.max);
+  }
+  if (!Number.isNaN(col)) {
+    state.colRatio = clamp(col, LAYOUT_LIMITS.min, LAYOUT_LIMITS.max);
+  }
+  if (fit !== null) {
+    state.fitToPanel = fit === "true";
+  }
+}
+
+function saveLayoutPrefs() {
+  localStorage.setItem(STORAGE_KEYS.rowRatio, String(state.rowRatio));
+  localStorage.setItem(STORAGE_KEYS.colRatio, String(state.colRatio));
+  localStorage.setItem(STORAGE_KEYS.fitToPanel, String(state.fitToPanel));
+}
+
+function applyLayout() {
+  const topWeight = state.rowRatio;
+  const bottomWeight = 1 - state.rowRatio;
+  const leftWeight = state.colRatio;
+  const rightWeight = 1 - state.colRatio;
+
+  els.rowTop.style.flex = `${topWeight} 1 0%`;
+  els.rowBottom.style.flex = `${bottomWeight} 1 0%`;
+
+  for (const row of [els.rowTop, els.rowBottom]) {
+    const [leftPanel, , rightPanel] = row.children;
+    leftPanel.style.flex = `${leftWeight} 1 0%`;
+    rightPanel.style.flex = `${rightWeight} 1 0%`;
+  }
+}
+
+function applyFitMode() {
+  const modeClass = state.fitToPanel ? "fit-mode" : "native-mode";
+  for (const panel of [els.renderPanel, els.maskPanel]) {
+    panel.classList.remove("fit-mode", "native-mode");
+    panel.classList.add(modeClass);
+  }
+  els.fitToPanel.checked = state.fitToPanel;
+}
 
 function setStatus(text) {
   els.statusText.textContent = text;
@@ -149,7 +223,89 @@ async function jumpToId(sampleId) {
   }
 }
 
+function setupSplitters() {
+  bindRowSplitter(els.splitterRow, els.workspace, els.rowTop);
+  bindColumnSplitter(els.splitterCol, els.rowTop);
+  bindColumnSplitter(els.splitterColBottom, els.rowBottom);
+}
+
+function bindRowSplitter(splitter, container, topRow) {
+  startDrag(splitter, (event) => {
+    const rect = container.getBoundingClientRect();
+    const splitterHeight = els.splitterRow.offsetHeight;
+    const available = rect.height - splitterHeight;
+    if (available <= 0) {
+      return;
+    }
+
+    const y = (event.clientY ?? event.touches?.[0]?.clientY ?? 0) - rect.top;
+    state.rowRatio = clamp(y / available, LAYOUT_LIMITS.min, LAYOUT_LIMITS.max);
+    applyLayout();
+    saveLayoutPrefs();
+  });
+}
+
+function bindColumnSplitter(splitter, row) {
+  startDrag(splitter, (event) => {
+    const rect = row.getBoundingClientRect();
+    const splitterWidth = splitter.offsetWidth;
+    const available = rect.width - splitterWidth;
+    if (available <= 0) {
+      return;
+    }
+
+    const x = (event.clientX ?? event.touches?.[0]?.clientX ?? 0) - rect.left;
+    state.colRatio = clamp(x / available, LAYOUT_LIMITS.min, LAYOUT_LIMITS.max);
+    applyLayout();
+    saveLayoutPrefs();
+  });
+}
+
+function startDrag(splitter, onMove) {
+  let dragging = false;
+
+  const finish = () => {
+    if (!dragging) {
+      return;
+    }
+    dragging = false;
+    splitter.classList.remove("dragging");
+    document.body.classList.remove("dragging-splitter");
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", finish);
+    window.removeEventListener("touchmove", move);
+    window.removeEventListener("touchend", finish);
+  };
+
+  const move = (event) => {
+    if (!dragging) {
+      return;
+    }
+    event.preventDefault();
+    onMove(event);
+  };
+
+  const begin = (event) => {
+    dragging = true;
+    splitter.classList.add("dragging");
+    document.body.classList.add("dragging-splitter");
+    onMove(event);
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", finish);
+    window.addEventListener("touchmove", move, { passive: false });
+    window.addEventListener("touchend", finish);
+  };
+
+  splitter.addEventListener("mousedown", begin);
+  splitter.addEventListener("touchstart", begin, { passive: true });
+}
+
 async function init() {
+  loadLayoutPrefs();
+  applyLayout();
+  applyFitMode();
+  setupSplitters();
+
   try {
     const meta = await fetchJson("/api/meta");
     state.total = meta.count;
@@ -194,6 +350,12 @@ els.sampleId.addEventListener("keydown", (event) => {
   }
 });
 
+els.fitToPanel.addEventListener("change", () => {
+  state.fitToPanel = els.fitToPanel.checked;
+  applyFitMode();
+  saveLayoutPrefs();
+});
+
 document.addEventListener("keydown", (event) => {
   if (event.target.matches("input, textarea")) {
     return;
@@ -229,5 +391,7 @@ els.btnCopyJson.addEventListener("click", () => {
 els.btnCopyConfig.addEventListener("click", () => {
   copyText(state.configYaml, "config.yaml");
 });
+
+window.addEventListener("resize", applyLayout);
 
 init();
