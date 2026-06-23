@@ -30,10 +30,6 @@ def is_active() -> bool:
     return _queue is not None
 
 
-def worker_slot() -> int:
-    return _worker_slot
-
-
 def emit(kind: str, *payload: Any) -> None:
     if _queue is not None:
         _queue.put((kind, *payload))
