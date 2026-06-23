@@ -27,51 +27,86 @@
         <button id="btn-next" type="button" title="Next (→)">▶</button>
         <button id="btn-last" type="button" title="Last sample (End)">▶|</button>
       </div>
-      <div class="toolbar-group meta">
-        <span id="status-text" class="muted">Loading…</span>
+      <div class="toolbar-group view-controls">
+        <label class="checkbox-input" title="Scale images to fill panel instead of native pixel size">
+          <input id="fit-to-panel" type="checkbox" checked />
+          <span>Fit images to panel</span>
+        </label>
+        <span id="status-text" class="muted"></span>
       </div>
     </header>
 
-    <main class="grid">
-      <section class="panel" aria-label="Rendered image with click point">
-        <header>
-          <h2>Render</h2>
-          <span id="click-label" class="chip"></span>
-        </header>
-        <div class="panel-body image-panel">
-          <canvas id="render-canvas"></canvas>
-        </div>
-      </section>
+    <main class="workspace" id="workspace">
+      <div class="pane-row" id="row-top">
+        <section class="panel" aria-label="Rendered image with click point">
+          <header>
+            <h2>Render</h2>
+            <span id="click-label" class="chip"></span>
+          </header>
+          <div class="panel-body image-panel fit-mode" id="render-panel">
+            <canvas id="render-canvas"></canvas>
+          </div>
+        </section>
 
-      <section class="panel" aria-label="Object mask">
-        <header>
-          <h2>Mask</h2>
-          <span id="object-label" class="chip"></span>
-        </header>
-        <div class="panel-body image-panel">
-          <img id="mask-image" alt="Segmentation mask" />
-        </div>
-      </section>
+        <div
+          class="splitter splitter-v"
+          id="splitter-col"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize image columns"
+          tabindex="0"
+        ></div>
 
-      <section class="panel" aria-label="Annotation JSON">
-        <header>
-          <h2>Annotation</h2>
-          <button id="btn-copy-json" type="button" class="ghost">Copy</button>
-        </header>
-        <div class="panel-body code-panel">
-          <pre id="annotation-json"></pre>
-        </div>
-      </section>
+        <section class="panel" aria-label="Object mask">
+          <header>
+            <h2>Mask</h2>
+            <span id="object-label" class="chip"></span>
+          </header>
+          <div class="panel-body image-panel fit-mode" id="mask-panel">
+            <img id="mask-image" alt="Segmentation mask" />
+          </div>
+        </section>
+      </div>
 
-      <section class="panel" aria-label="Generation config">
-        <header>
-          <h2>config.yaml</h2>
-          <button id="btn-copy-config" type="button" class="ghost">Copy</button>
-        </header>
-        <div class="panel-body code-panel">
-          <pre id="config-yaml"></pre>
-        </div>
-      </section>
+      <div
+        class="splitter splitter-h"
+        id="splitter-row"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize top and bottom rows"
+        tabindex="0"
+      ></div>
+
+      <div class="pane-row" id="row-bottom">
+        <section class="panel" aria-label="Annotation JSON">
+          <header>
+            <h2>Annotation</h2>
+            <button id="btn-copy-json" type="button" class="ghost">Copy</button>
+          </header>
+          <div class="panel-body code-panel">
+            <pre id="annotation-json"></pre>
+          </div>
+        </section>
+
+        <div
+          class="splitter splitter-v"
+          id="splitter-col-bottom"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize code columns"
+          tabindex="0"
+        ></div>
+
+        <section class="panel" aria-label="Generation config">
+          <header>
+            <h2>config.yaml</h2>
+            <button id="btn-copy-config" type="button" class="ghost">Copy</button>
+          </header>
+          <div class="panel-body code-panel">
+            <pre id="config-yaml"></pre>
+          </div>
+        </section>
+      </div>
     </main>
 
     <script src="{{ url_for('static', filename='app.js') }}" defer></script>
