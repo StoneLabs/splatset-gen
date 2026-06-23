@@ -67,8 +67,6 @@ def render(
         device=device,
         dtype=torch.int32,
     )
-    best_weight = torch.zeros(height, width, device=device, dtype=dtype)
-
     sort_idx = torch.argsort(depth)
     win_size = torch.tensor([width, height], device=device, dtype=dtype)
     n_sorted = sort_idx.numel()
@@ -117,12 +115,16 @@ def render(
         oid = int(gaussians.object_ids[idx].item())
 
         fg_rgb[y0:y1, x0:x1, :] += weight.unsqueeze(-1) * patch_color
-        dominant = weight > best_weight[y0:y1, x0:x1]
-        best_weight[y0:y1, x0:x1] = torch.where(dominant, weight, best_weight[y0:y1, x0:x1])
+        # Front-most hit: first gaussian along the view ray that contributes at this
+        # pixel owns the object id (raycast semantics). Do not let deeper splats
+        # overwrite — max(alpha*T) wrongly assigned rear objects on semi-transparent
+        # foreground pixels.
+        id_patch = object_id_map[y0:y1, x0:x1]
+        first_hit = (id_patch == BACKGROUND_ID) & (patch_alpha > 1e-4)
         object_id_map[y0:y1, x0:x1] = torch.where(
-            dominant,
-            torch.full_like(object_id_map[y0:y1, x0:x1], oid),
-            object_id_map[y0:y1, x0:x1],
+            first_hit,
+            torch.full_like(id_patch, oid),
+            id_patch,
         )
         transmittance[y0:y1, x0:x1] = t_patch * (1.0 - patch_alpha)
 

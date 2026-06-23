@@ -58,3 +58,35 @@ def test_front_object_mask_filled_where_visible() -> None:
     front_mask = object_mask(out.object_id_map, clicked_object_id=1)
     visible_front = out.object_id_map == 1
     assert front_mask[visible_front].min().item() == 255
+
+
+def test_semitransparent_front_wins_object_id_over_rear() -> None:
+    """Front-most ray hit must not lose to a higher-weight rear splat."""
+    rear = make_object_blob(
+        0,
+        center=(0.0, 0.0, 0.0),
+        opacity=0.95,
+        sh_dc=(1.0, 0.1, 0.1),
+        seed=1,
+    )
+    front = make_object_blob(
+        1,
+        center=(0.0, 0.0, 0.35),
+        opacity=0.25,
+        sh_dc=(0.1, 1.0, 0.1),
+        seed=2,
+    )
+    scene = concat_objects([rear, front])
+
+    width = height = 128
+    viewmat = look_at_viewmat(
+        eye=np.array([0.0, 0.0, 2.5], dtype=np.float64),
+        target=np.array([0.0, 0.0, 0.15], dtype=np.float64),
+    )
+    k = intrinsics_from_fov(width, height, 60.0)
+    out = render(scene, viewmat, k, width, height)
+
+    overlap = (out.alpha > 0.5) & (out.object_id_map >= 0)
+    assert overlap.sum() > 0
+    front_ids = out.object_id_map[overlap]
+    assert (front_ids == 1).float().mean().item() > 0.5
