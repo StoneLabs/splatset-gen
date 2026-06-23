@@ -28,6 +28,17 @@ def sample_click(
     return x, y, object_id
 
 
-def object_mask(object_id_map: torch.Tensor, clicked_object_id: int) -> torch.Tensor:
-    """Visible-only object mask: white where dominant object matches, else black."""
-    return (object_id_map == clicked_object_id).to(torch.uint8) * 255
+def object_mask(
+    object_weights: torch.Tensor,
+    clicked_object_id: int,
+    weight_threshold: float = 0.05,
+) -> torch.Tensor:
+    """Visible-only object mask from per-object compositing weights.
+
+    White where the clicked object contributes enough visible weight; black
+    elsewhere (background, other objects, occluded regions, transparent fringe).
+    """
+    contrib = object_weights[:, :, clicked_object_id]
+    dominant = object_weights.argmax(dim=-1) == clicked_object_id
+    visible = (contrib > weight_threshold) & dominant
+    return visible.to(torch.uint8) * 255
