@@ -94,6 +94,42 @@ Example JSONL record:
 
 ---
 
+## Browse a dataset
+
+Local web viewer for inspecting generated runs. Opens a 2×2 layout:
+
+| Panel | Content |
+|-------|---------|
+| Top left | RGB render with red crosshair at click `(x, y)` |
+| Top right | Object mask |
+| Bottom left | Annotation JSON for the current sample |
+| Bottom right | `config.yaml` snapshot from the run |
+
+```bash
+uv run viewer/app.py --dataset outputs/run2
+```
+
+Then open **http://127.0.0.1:8765** in a browser.
+
+### Viewer flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dataset` | `outputs/run2` | Dataset directory (must contain `annotations.jsonl`) |
+| `--host` | `127.0.0.1` | Bind address |
+| `--port` | `8765` | Bind port |
+| `--debug` | off | Flask debug mode |
+
+### UI controls
+
+- **Sample navigation:** prev/next buttons, index input, ID jump, keyboard `←`/`→` (or `j`/`k`), `Home`/`End`
+- **Fit images to panel:** checkbox (default on) — scale images to the panel; off shows native pixel size with scroll
+- **Resizable panels:** drag the horizontal or vertical splitters between panels; layout ratios persist in browser `localStorage`
+
+Large datasets (100k+ samples) use a byte-offset index on `annotations.jsonl` with an on-disk cache (`.viewer_index_*.pkl` in the dataset dir) so startup and random access stay fast without loading all annotations into memory.
+
+---
+
 ## Configuration
 
 Configs live in `configs/`. Key sections:
@@ -189,6 +225,8 @@ configs/                 # YAML scene/render settings
 scripts/
   generate_dataset.py    # main CLI
   render_debug.py        # single-PLY debug render
+viewer/
+  app.py                 # dataset browser (Flask)
 src/
   ply_loader.py          # PLY → SceneGaussians
   scene.py               # random multi-object placement
