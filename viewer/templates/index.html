@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Splat Dataset Viewer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="toolbar-group">
+        <h1>Splat Dataset Viewer</h1>
+        <span id="dataset-path" class="muted"></span>
+      </div>
+      <div class="toolbar-group nav-controls">
+        <button id="btn-first" type="button" title="First sample (Home)">|◀</button>
+        <button id="btn-prev" type="button" title="Previous (←)">◀</button>
+        <label class="index-input">
+          <span>Sample</span>
+          <input id="sample-index" type="number" min="0" step="1" value="0" />
+          <span id="sample-count" class="muted">/ 0</span>
+        </label>
+        <label class="id-input">
+          <span>ID</span>
+          <input id="sample-id" type="text" placeholder="000001" spellcheck="false" />
+        </label>
+        <button id="btn-next" type="button" title="Next (→)">▶</button>
+        <button id="btn-last" type="button" title="Last sample (End)">▶|</button>
+      </div>
+      <div class="toolbar-group meta">
+        <span id="status-text" class="muted">Loading…</span>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="panel" aria-label="Rendered image with click point">
+        <header>
+          <h2>Render</h2>
+          <span id="click-label" class="chip"></span>
+        </header>
+        <div class="panel-body image-panel">
+          <canvas id="render-canvas"></canvas>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Object mask">
+        <header>
+          <h2>Mask</h2>
+          <span id="object-label" class="chip"></span>
+        </header>
+        <div class="panel-body image-panel">
+          <img id="mask-image" alt="Segmentation mask" />
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Annotation JSON">
+        <header>
+          <h2>Annotation</h2>
+          <button id="btn-copy-json" type="button" class="ghost">Copy</button>
+        </header>
+        <div class="panel-body code-panel">
+          <pre id="annotation-json"></pre>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Generation config">
+        <header>
+          <h2>config.yaml</h2>
+          <button id="btn-copy-config" type="button" class="ghost">Copy</button>
+        </header>
+        <div class="panel-body code-panel">
+          <pre id="config-yaml"></pre>
+        </div>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+  </body>
+</html>

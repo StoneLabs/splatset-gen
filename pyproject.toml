@@ -5,6 +5,7 @@ description = "CPU Gaussian-splat training data generator for click-to-segment m
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "flask",
     "numpy",
     "pillow",
     "plyfile",
