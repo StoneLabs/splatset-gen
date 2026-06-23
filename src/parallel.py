@@ -54,6 +54,7 @@ def _worker(
 
     t0 = time.perf_counter()
     try:
+        project_root = Path(config["_project_root"]) if "_project_root" in config else None
         generate_one_sample(
             [Path(p) for p in ply_paths_str],
             config,
@@ -61,6 +62,7 @@ def _worker(
             Path(output_dir_str),
             sample_id,
             verbose=verbose,
+            project_root=project_root,
         )
         elapsed = time.perf_counter() - t0
         _emit("done", worker_id, sample_id, elapsed, None)
@@ -129,6 +131,7 @@ def generate_dataset_parallel(
     seed: int,
     verbose: bool = False,
     show_progress: bool = True,
+    project_root: Path | None = None,
 ) -> list[str]:
     """Generate ``num_samples`` in parallel; write config snapshot once."""
     ply_paths = sorted(ply_dir.glob("*.ply"))
@@ -140,6 +143,8 @@ def generate_dataset_parallel(
 
     config = dict(config)
     config["_workers"] = workers
+    if project_root is not None:
+        config["_project_root"] = str(project_root.resolve())
     ply_paths_str = [str(p) for p in ply_paths]
 
     tasks = [

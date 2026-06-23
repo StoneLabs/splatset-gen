@@ -7,6 +7,7 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 import yaml
 from PIL import Image
@@ -14,7 +15,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from background import BackgroundSpec, composite  # noqa: E402
+from background import background_from_config, composite  # noqa: E402
 from camera import camera_from_orbit  # noqa: E402
 from ply_loader import load_ply  # noqa: E402
 from render import render  # noqa: E402
@@ -89,14 +90,11 @@ def main() -> None:
     _save_rgb(fg_path, out.fg_rgb)
     print(f"  fg_rgb → {fg_path}  (alpha max={out.alpha.max():.3f})")
 
-    bg_cfg = cfg.get("background", {})
-    bg = BackgroundSpec(
-        mode=bg_cfg.get("mode", "solid"),
-        solid_color=tuple(bg_cfg.get("solid_color", [0.1, 0.1, 0.1])),
-    )
-    rgb = composite(out.fg_rgb, out.alpha, bg, w, h)
+    bg = background_from_config(cfg, base_dir=ROOT)
+    rng = np.random.default_rng(0)
+    rgb, bg_meta = composite(out.fg_rgb, out.alpha, bg, w, h, rng=rng)
     _save_rgb(args.output, rgb)
-    print(f"  rgb    → {args.output}")
+    print(f"  rgb    → {args.output}  (background={bg_meta})")
 
     if out.alpha.max() < 0.01:
         print("Warning: render is nearly blank")

@@ -9,21 +9,12 @@ import numpy as np
 import torch
 
 import event_log
-from background import BackgroundSpec, composite
+from background import background_from_config, composite
 from camera import sample_random_camera
 from export import SampleRecord, export_sample
 from picker import object_mask, sample_click
 from render import render
 from scene import build_random_scene
-
-
-def _background_from_config(config: dict[str, Any]) -> BackgroundSpec:
-    bg = config.get("background", {})
-    color = bg.get("solid_color", [0.1, 0.1, 0.1])
-    return BackgroundSpec(
-        mode=bg.get("mode", "solid"),
-        solid_color=(float(color[0]), float(color[1]), float(color[2])),
-    )
 
 
 def generate_one_sample(
@@ -33,6 +24,7 @@ def generate_one_sample(
     output_dir: Path,
     sample_id: str,
     verbose: bool = False,
+    project_root: Path | None = None,
 ) -> SampleRecord:
     """Build scene, render, pick click, write occlusion-aware mask + RGB."""
     event_log.set_sample(sample_id)
@@ -43,7 +35,7 @@ def generate_one_sample(
 
     scene, objects_meta = build_random_scene(ply_paths, config, rng)
     lo, hi = scene.bounds()
-    background = _background_from_config(config)
+    background = background_from_config(config, base_dir=project_root)
 
     last_error: Exception | None = None
     for _ in range(max_camera_retries):
@@ -63,7 +55,9 @@ def generate_one_sample(
             if out.alpha.max() < alpha_threshold:
                 raise ValueError("Render has insufficient foreground coverage")
 
-            rgb = composite(out.fg_rgb, out.alpha, background, width, height)
+            rgb, bg_meta = composite(
+                out.fg_rgb, out.alpha, background, width, height, rng=rng
+            )
             x, y, clicked_object_id = sample_click(
                 out.alpha, out.object_id_map, alpha_threshold, rng
             )
@@ -79,10 +73,7 @@ def generate_one_sample(
                 point=[x, y],
                 object_id=clicked_object_id,
                 num_objects=scene.num_objects,
-                background={
-                    "mode": background.mode,
-                    "color": list(background.solid_color),
-                },
+                background=bg_meta,
                 camera={
                     "width": width,
                     "height": height,

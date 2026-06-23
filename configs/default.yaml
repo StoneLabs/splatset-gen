@@ -5,11 +5,10 @@ render:
   sh_degree: 0
 
 background:
-  mode: "solid"
+  mode: "image"
+  image_dir: "assets/backgrounds/"
+  resize_mode: "crop"
   solid_color: [0.1, 0.1, 0.1]
-  # v2 (not implemented in v1):
-  # image_dir: "assets/backgrounds/"
-  # resize_mode: "crop"
 
 scene:
   num_objects_min: 2
