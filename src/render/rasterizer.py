@@ -25,6 +25,7 @@ class RenderOutput:
     fg_rgb: torch.Tensor
     alpha: torch.Tensor
     object_id_map: torch.Tensor
+    object_weights: torch.Tensor  # [H, W, num_objects] front-to-back weight per object
 
 
 def render(
@@ -59,13 +60,11 @@ def render(
         sh_degree=sh_degree,
     )
 
+    num_objects = gaussians.num_objects
     fg_rgb = torch.zeros(height, width, 3, device=device, dtype=dtype)
     transmittance = torch.ones(height, width, device=device, dtype=dtype)
-    object_id_map = torch.full(
-        (height, width),
-        BACKGROUND_ID,
-        device=device,
-        dtype=torch.int32,
+    object_weights = torch.zeros(
+        height, width, max(num_objects, 1), device=device, dtype=dtype
     )
     sort_idx = torch.argsort(depth)
     win_size = torch.tensor([width, height], device=device, dtype=dtype)
@@ -120,18 +119,28 @@ def render(
         oid = int(gaussians.object_ids[idx].item())
 
         fg_rgb[y0:y1, x0:x1, :] += weight.unsqueeze(-1) * patch_color
-        # Front-most hit: first gaussian along the view ray that contributes at this
-        # pixel owns the object id (raycast semantics). Do not let deeper splats
-        # overwrite — max(alpha*T) wrongly assigned rear objects on semi-transparent
-        # foreground pixels.
-        id_patch = object_id_map[y0:y1, x0:x1]
-        first_hit = (id_patch == BACKGROUND_ID) & (patch_alpha > 1e-4)
-        object_id_map[y0:y1, x0:x1] = torch.where(
-            first_hit,
-            torch.full_like(id_patch, oid),
-            id_patch,
-        )
+        ow_patch = object_weights[y0:y1, x0:x1, oid]
+        object_weights[y0:y1, x0:x1, oid] = ow_patch + weight
         transmittance[y0:y1, x0:x1] = t_patch * (1.0 - patch_alpha)
 
     alpha = (1.0 - transmittance).clamp(0.0, 1.0)
-    return RenderOutput(fg_rgb=fg_rgb, alpha=alpha, object_id_map=object_id_map)
+    if num_objects == 0:
+        object_id_map = torch.full(
+            (height, width), BACKGROUND_ID, device=device, dtype=torch.int32
+        )
+        object_weights = object_weights[:, :, :0]
+    else:
+        object_weights = object_weights[:, :, :num_objects]
+        total_object_weight = object_weights.sum(dim=-1)
+        object_id_map = object_weights.argmax(dim=-1).to(torch.int32)
+        object_id_map = torch.where(
+            total_object_weight > 1e-6,
+            object_id_map,
+            torch.full_like(object_id_map, BACKGROUND_ID),
+        )
+    return RenderOutput(
+        fg_rgb=fg_rgb,
+        alpha=alpha,
+        object_id_map=object_id_map,
+        object_weights=object_weights,
+    )

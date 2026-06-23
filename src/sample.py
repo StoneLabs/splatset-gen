@@ -126,7 +126,7 @@ def generate_one_sample(
             x, y, clicked_object_id = sample_click(
                 out.alpha, out.object_id_map, alpha_threshold, rng
             )
-            mask = object_mask(out.object_id_map, clicked_object_id)
+            mask = object_mask(out.object_weights, clicked_object_id)
             mask_pixels = int((mask == 255).sum().item())
             pick_detail = (
                 f"oid={clicked_object_id} @ ({x},{y}) · mask={mask_pixels:,}px"
