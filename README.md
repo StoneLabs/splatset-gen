@@ -96,12 +96,13 @@ Example JSONL record:
 
 ## Browse a dataset
 
-Local web viewer for inspecting generated runs. Opens a 2×2 layout:
+Local web viewer for inspecting generated runs. Opens a 3+2 layout:
 
 | Panel | Content |
 |-------|---------|
 | Top left | RGB render with red crosshair at click `(x, y)` |
-| Top right | Object mask |
+| Top center | Object mask |
+| Top right | RGB + red mask overlay (opacity slider in panel header) |
 | Bottom left | Annotation JSON for the current sample |
 | Bottom right | `config.yaml` snapshot from the run |
 
@@ -124,6 +125,7 @@ Then open **http://127.0.0.1:8765** in a browser.
 
 - **Sample navigation:** prev/next buttons, index input, ID jump, keyboard `←`/`→` (or `j`/`k`), `Home`/`End`
 - **Fit images to panel:** checkbox (default on) — scale images to the panel; off shows native pixel size with scroll
+- **Mask overlay opacity:** slider in the Overlay panel (default 50%, persisted in `localStorage`)
 - **Resizable panels:** drag the horizontal or vertical splitters between panels; layout ratios persist in browser `localStorage`
 
 Large datasets (100k+ samples) use a byte-offset index on `annotations.jsonl` with an on-disk cache (`.viewer_index_*.pkl` in the dataset dir) so startup and random access stay fast without loading all annotations into memory.

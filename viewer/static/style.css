@@ -132,6 +132,20 @@ h2 {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+.overlay-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  user-select: none;
+}
+
+.overlay-control input[type="range"] {
+  width: 6.5rem;
+  accent-color: #ff4d4f;
+  cursor: pointer;
+}
+
 .workspace {
   flex: 1 1 auto;
   min-height: 0;

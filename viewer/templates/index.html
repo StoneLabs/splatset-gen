@@ -66,6 +66,29 @@
             <img id="mask-image" alt="Segmentation mask" />
           </div>
         </section>
+
+        <div
+          class="splitter splitter-v"
+          id="splitter-col-overlay"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize mask and overlay columns"
+          tabindex="0"
+        ></div>
+
+        <section class="panel" aria-label="Mask overlay on render">
+          <header>
+            <h2>Overlay</h2>
+            <label class="overlay-control" title="Mask overlay opacity">
+              <span>Mask</span>
+              <input id="mask-opacity" type="range" min="0" max="100" value="50" />
+              <span id="mask-opacity-label" class="chip">50%</span>
+            </label>
+          </header>
+          <div class="panel-body image-panel fit-mode" id="overlay-panel">
+            <canvas id="overlay-canvas"></canvas>
+          </div>
+        </section>
       </div>
 
       <div
