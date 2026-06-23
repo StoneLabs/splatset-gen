@@ -10,7 +10,7 @@ import torch
 from plyfile import PlyData
 
 import event_log
-from ply_loader import SceneGaussians, format_extent, load_ply, release_acquired
+from ply_loader import SceneGaussians, format_extent, load_ply
 
 
 def _euler_matrix_xyz(rx: float, ry: float, rz: float) -> np.ndarray:
@@ -89,9 +89,9 @@ def _transform_gaussians(
         means=means,
         quats=quats,
         scales=scales,
-        opacities=gaussians.opacities.clone(),
-        sh_dc=gaussians.sh_dc.clone(),
-        sh_rest=gaussians.sh_rest.clone(),
+        opacities=gaussians.opacities,
+        sh_dc=gaussians.sh_dc,
+        sh_rest=gaussians.sh_rest,
         object_ids=object_ids,
     )
 
@@ -145,55 +145,54 @@ def build_random_scene(
     parts: list[SceneGaussians] = []
     metadata: list[dict[str, Any]] = []
 
-    try:
-        for object_id, ply_path in enumerate(chosen):
-            n_total: int | None = None
-            if verbose and max_g is not None:
-                n_total = len(PlyData.read(str(ply_path))["vertex"])
+    for object_id, ply_path in enumerate(chosen):
+        if verbose and event_log.is_active():
+            event_log.worker_status("scene", f"load {ply_path.name}")
 
-            obj, load_stats = load_ply(ply_path, max_gaussians=max_g, rng=rng)
-            n_loaded = obj.num_gaussians
+        n_total: int | None = None
+        if verbose and max_g is not None:
+            n_total = len(PlyData.read(str(ply_path))["vertex"])
 
-            if verbose and event_log.is_active():
-                if n_total is not None and n_total > n_loaded:
-                    count_label = f"{n_loaded:,}/{n_total:,} gaussians (subset)"
-                else:
-                    count_label = f"{n_loaded:,} gaussians"
-                extent_label = format_extent(load_stats)
-                event_log.log(
-                    f"[dim]ply[/] oid={object_id} {ply_path.name} · {count_label} · "
-                    f"extent {extent_label}"
-                )
+        obj, load_stats = load_ply(ply_path, max_gaussians=max_g, rng=rng)
+        n_loaded = obj.num_gaussians
 
-            placement = rng.uniform(pos_range[0], pos_range[1], size=3).astype(np.float32)
-            euler = np.deg2rad(rng.uniform(-rot_max, rot_max, size=3))
-            rotation = _euler_matrix_xyz(*euler)
-            scale = float(rng.uniform(scale_jitter[0], scale_jitter[1]))
-
-            transformed = _transform_gaussians(obj, rotation, placement, scale, object_id)
-            parts.append(transformed)
-            metadata.append(
-                {
-                    "object_id": object_id,
-                    "ply": ply_path.name,
-                    "transform": {
-                        "translation": placement.tolist(),
-                        "rotation_euler_deg": np.rad2deg(euler).tolist(),
-                        "scale": scale,
-                    },
-                }
+        if verbose and event_log.is_active():
+            if n_total is not None and n_total > n_loaded:
+                count_label = f"{n_loaded:,}/{n_total:,} gaussians (subset)"
+            else:
+                count_label = f"{n_loaded:,} gaussians"
+            extent_label = format_extent(load_stats)
+            event_log.log(
+                f"[dim]ply[/] oid={object_id} {ply_path.name} · {count_label} · "
+                f"extent {extent_label}"
             )
 
-            if verbose and event_log.is_active():
-                rot_deg = np.rad2deg(euler)
-                event_log.log(
-                    f"[dim]place[/] oid={object_id} "
-                    f"pos=[{placement[0]:+.2f},{placement[1]:+.2f},{placement[2]:+.2f}] "
-                    f"rot=[{rot_deg[0]:.0f},{rot_deg[1]:.0f},{rot_deg[2]:.0f}]° "
-                    f"scale={scale:.2f}"
-                )
+        placement = rng.uniform(pos_range[0], pos_range[1], size=3).astype(np.float32)
+        euler = np.deg2rad(rng.uniform(-rot_max, rot_max, size=3))
+        rotation = _euler_matrix_xyz(*euler)
+        scale = float(rng.uniform(scale_jitter[0], scale_jitter[1]))
 
-        return _concat_gaussians(parts), metadata
-    finally:
-        # Scene tensors are fully owned after concat; drop cache shm mappings early.
-        release_acquired()
+        transformed = _transform_gaussians(obj, rotation, placement, scale, object_id)
+        parts.append(transformed)
+        metadata.append(
+            {
+                "object_id": object_id,
+                "ply": ply_path.name,
+                "transform": {
+                    "translation": placement.tolist(),
+                    "rotation_euler_deg": np.rad2deg(euler).tolist(),
+                    "scale": scale,
+                },
+            }
+        )
+
+        if verbose and event_log.is_active():
+            rot_deg = np.rad2deg(euler)
+            event_log.log(
+                f"[dim]place[/] oid={object_id} "
+                f"pos=[{placement[0]:+.2f},{placement[1]:+.2f},{placement[2]:+.2f}] "
+                f"rot=[{rot_deg[0]:.0f},{rot_deg[1]:.0f},{rot_deg[2]:.0f}]° "
+                f"scale={scale:.2f}"
+            )
+
+    return _concat_gaussians(parts), metadata
