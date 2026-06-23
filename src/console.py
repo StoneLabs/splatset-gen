@@ -15,6 +15,7 @@ from typing import Any, Literal, TextIO
 import click
 
 from background import background_from_config, list_background_images
+from ply_cache import CACHE_WORKER_ID
 
 from rich import box
 from rich.console import Console
@@ -34,16 +35,20 @@ from rich.text import Text
 
 console = Console()
 
-RECENT_LINES = 15
+RECENT_LINES = 20
 BRAILLE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _RICH_TAG = re.compile(r"\[[^\]]*\]")
 
 
 def _worker_prefix_rich(worker_id: int) -> str:
+    if worker_id == CACHE_WORKER_ID:
+        return "[red]mem[/] "
     return f"[purple]#{worker_id}[/] "
 
 
 def _worker_prefix_plain(worker_id: int) -> str:
+    if worker_id == CACHE_WORKER_ID:
+        return "mem "
     return f"#{worker_id} "
 
 
@@ -63,12 +68,22 @@ class WorkerState:
 
 
 @dataclass
+class CacheEntryRow:
+    name: str
+    refs: int
+    memory_bytes: int
+    status: str
+    timeout_s: float | None = None
+
+
+@dataclass
 class ProgressTracker:
     num_samples: int
     workers: int
     verbose: bool = False
     log_path: Path | None = None
     worker_states: dict[int, WorkerState] = field(default_factory=dict)
+    cache_entries: list[CacheEntryRow] = field(default_factory=list)
     completed: int = 0
     failed: int = 0
     start_time: float = field(default_factory=time.perf_counter)
@@ -157,6 +172,41 @@ class ProgressTracker:
     def on_log(self, worker_id: int, message: str) -> None:
         self._record(worker_id, message)
 
+    def _record_mem(self, rich_body: str) -> None:
+        if self.verbose:
+            self._record(CACHE_WORKER_ID, rich_body)
+
+    def on_cache_claim(self, worker_id: int, ply_name: str, ref_count: int) -> None:
+        self._record_mem(
+            f"[red]worker {worker_id}[/] claimed usage of [cyan]{ply_name}[/] "
+            f"[dim]· {ref_count} handle{'s' if ref_count != 1 else ''}[/]"
+        )
+
+    def on_cache_release(self, worker_id: int, ply_name: str, ref_count: int) -> None:
+        self._record_mem(
+            f"[red]worker {worker_id}[/] released [cyan]{ply_name}[/] "
+            f"[dim]· {ref_count} handle{'s' if ref_count != 1 else ''} open[/]"
+        )
+
+    def on_cache_evict(self, ply_name: str) -> None:
+        self._record_mem(f"[dim]evicted[/] [cyan]{ply_name}[/] from cache")
+
+    def refresh_cache(self, cache_proxy: Any) -> None:
+        try:
+            rows = cache_proxy.snapshot()
+        except (BrokenPipeError, ConnectionError, EOFError, OSError):
+            return
+        self.cache_entries = [
+            CacheEntryRow(
+                name=row["name"],
+                refs=int(row["refs"]),
+                memory_bytes=int(row["memory_bytes"]),
+                status=str(row["status"]),
+                timeout_s=row["timeout_s"],
+            )
+            for row in rows
+        ]
+
     def tick(self) -> None:
         now = time.perf_counter()
         active = 0
@@ -190,6 +240,22 @@ def _worker_label(worker_id: int, status: str) -> Text:
     return Text.assemble(("⠀ ", "dim"), (f"#{worker_id}", "dim"))
 
 
+def _format_bytes(num_bytes: int) -> str:
+    if num_bytes >= 1024 * 1024:
+        return f"{num_bytes / (1024 * 1024):.1f} MB"
+    if num_bytes >= 1024:
+        return f"{num_bytes / 1024:.1f} KB"
+    return f"{num_bytes} B"
+
+
+def _cache_status_style(status: str) -> str:
+    return {
+        "loading": "yellow",
+        "loaded": "green",
+        "unloading": "red dim",
+    }.get(status, "red")
+
+
 def _format_recent_panel(tracker: ProgressTracker) -> Text:
     """Fixed-height log window (always RECENT_LINES rows)."""
     lines = list(tracker.recent)
@@ -198,6 +264,33 @@ def _format_recent_panel(tracker: ProgressTracker) -> Text:
     pad = RECENT_LINES - len(lines)
     padded = ["[dim] [/]"] * pad + lines
     return Text.from_markup("\n".join(padded))
+
+
+def _build_memory_panel(tracker: ProgressTracker) -> Table:
+    mem_table = Table(box=box.SIMPLE_HEAD, expand=True, show_edge=False, pad_edge=False)
+    mem_table.add_column("Splat", min_width=10, no_wrap=False)
+    mem_table.add_column("Status", width=10)
+    mem_table.add_column("Refs", justify="right", width=5)
+    mem_table.add_column("Memory", justify="right", width=9)
+    mem_table.add_column("Timeout", justify="right", width=8)
+
+    if tracker.cache_entries:
+        for row in tracker.cache_entries:
+            if row.refs > 0 or row.timeout_s is None:
+                timeout = "—"
+            else:
+                timeout = f"{row.timeout_s:.1f}s"
+            mem_table.add_row(
+                row.name,
+                Text(row.status, style=_cache_status_style(row.status)),
+                str(row.refs),
+                _format_bytes(row.memory_bytes),
+                timeout,
+            )
+    else:
+        mem_table.add_row("[dim]—[/]", "—", "—", "—", "—")
+
+    return mem_table
 
 
 def build_live_render(tracker: ProgressTracker) -> Table:
@@ -223,9 +316,15 @@ def build_live_render(tracker: ProgressTracker) -> Table:
             render = f"{int(st.render_pct)}%"
         else:
             render = "—"
+        if st.status == "working" and st.detail.startswith("waiting for load"):
+            status_label = st.detail
+            status_style = "yellow"
+        else:
+            status_label = st.status
+            status_style = _status_style(st.status)
         row: list[Any] = [
             _worker_label(wid, st.status),
-            Text(st.status, style=_status_style(st.status)),
+            Text(status_label, style=status_style),
             st.sample_id,
             render,
         ]
@@ -234,17 +333,29 @@ def build_live_render(tracker: ProgressTracker) -> Table:
         row.append(elapsed)
         worker_table.add_row(*row)
 
-    root.add_row(Panel(tracker._progress, border_style="cyan", padding=(0, 1)))
-    root.add_row(worker_table)
-    root.add_row(
+    bottom = Table.grid(expand=True)
+    bottom.add_column(ratio=3)
+    bottom.add_column(ratio=2)
+    bottom.add_row(
         Panel(
             _format_recent_panel(tracker),
             title="Recent",
             border_style="dim",
             padding=(0, 1),
             height=RECENT_LINES + 2,
-        )
+        ),
+        Panel(
+            _build_memory_panel(tracker),
+            title="[red]Memory[/]",
+            border_style="red",
+            padding=(0, 1),
+            height=RECENT_LINES + 2,
+        ),
     )
+
+    root.add_row(Panel(tracker._progress, border_style="cyan", padding=(0, 1)))
+    root.add_row(worker_table)
+    root.add_row(bottom)
 
     return root
 

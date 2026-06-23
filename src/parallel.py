@@ -17,20 +17,25 @@ import yaml
 import event_log
 from console import ProgressTracker, build_live_render, print_summary
 from export import save_config_snapshot
+from ply_cache import create_ply_cache_manager
+from ply_loader import bind_cache, clear_cache_binding
 from rich.live import Live
 from sample import generate_one_sample
 
 _PROGRESS_QUEUE: Any = None
 _WORKER_SLOT: int = 0
+_CACHE_PROXY: Any = None
 
 
-def _pool_init(progress_queue: Any, slot_counter: Any, slot_lock: Any) -> None:
-    global _PROGRESS_QUEUE, _WORKER_SLOT
+def _pool_init(progress_queue: Any, slot_counter: Any, slot_lock: Any, cache_proxy: Any) -> None:
+    global _PROGRESS_QUEUE, _WORKER_SLOT, _CACHE_PROXY
     _PROGRESS_QUEUE = progress_queue
+    _CACHE_PROXY = cache_proxy
     with slot_lock:
         _WORKER_SLOT = slot_counter.value
         slot_counter.value += 1
     event_log.bind(progress_queue, _WORKER_SLOT)
+    bind_cache(cache_proxy)
 
 
 def _emit(kind: str, *payload: Any) -> None:
@@ -96,11 +101,21 @@ def _drain_queue(queue: Any, tracker: ProgressTracker) -> None:
         elif kind == "status":
             _, worker_id, phase, detail = msg
             tracker.on_status(worker_id, phase, detail)
+        elif kind == "cache_claim":
+            _, worker_id, ply_name, ref_count = msg
+            tracker.on_cache_claim(worker_id, ply_name, ref_count)
+        elif kind == "cache_release":
+            _, worker_id, ply_name, ref_count = msg
+            tracker.on_cache_release(worker_id, ply_name, ref_count)
+        elif kind == "cache_evict":
+            _, ply_name = msg
+            tracker.on_cache_evict(ply_name)
 
 
 def _run_with_live(
     tracker: ProgressTracker,
     progress_queue: Any,
+    cache_proxy: Any,
     run_fn: Any,
 ) -> list[str]:
     """Run ``run_fn`` while a background thread pumps progress events to the UI."""
@@ -110,6 +125,7 @@ def _run_with_live(
         def pump() -> None:
             while not stop.is_set():
                 _drain_queue(progress_queue, tracker)
+                tracker.refresh_cache(cache_proxy)
                 tracker.tick()
                 live.update(build_live_render(tracker))
                 stop.wait(0.08)
@@ -122,6 +138,7 @@ def _run_with_live(
             stop.set()
             pump_thread.join(timeout=2.0)
             _drain_queue(progress_queue, tracker)
+            tracker.refresh_cache(cache_proxy)
             tracker.tick()
             live.update(build_live_render(tracker))
 
@@ -167,42 +184,73 @@ def generate_dataset_parallel(
     t0 = time.perf_counter()
 
     if not show_progress:
-        if workers <= 1:
-            return [_worker(t) for t in tasks]
-        with Pool(processes=workers) as pool:
-            return pool.map(_worker, tasks)
+        cache_manager, cache_proxy = create_ply_cache_manager(None)
+        try:
+            if workers <= 1:
+                bind_cache(cache_proxy)
+                try:
+                    results = [_worker(t) for t in tasks]
+                finally:
+                    clear_cache_binding()
+            else:
+                ui_manager = Manager()
+                slot_counter = ui_manager.Value("i", 0)
+                slot_lock = ui_manager.Lock()
+                with Pool(
+                    processes=workers,
+                    initializer=_pool_init,
+                    initargs=(ui_manager.Queue(), slot_counter, slot_lock, cache_proxy),
+                ) as pool:
+                    results = pool.map(_worker, tasks)
+        finally:
+            try:
+                cache_proxy.clear()
+                cache_proxy.shutdown()
+            except (BrokenPipeError, ConnectionError, EOFError, AttributeError):
+                pass
+            cache_manager.shutdown()
+        return sorted(results)
 
     manager = Manager()
     progress_queue = manager.Queue()
     slot_counter = manager.Value("i", 0)
     slot_lock = manager.Lock()
+    cache_manager, cache_proxy = create_ply_cache_manager(progress_queue)
 
     def run_sequential() -> list[str]:
         global _PROGRESS_QUEUE, _WORKER_SLOT
         _PROGRESS_QUEUE = progress_queue
         _WORKER_SLOT = 0
         event_log.bind(progress_queue, 0)
+        bind_cache(cache_proxy)
         out: list[str] = []
         for task in tasks:
             out.append(_worker(task))
         _PROGRESS_QUEUE = None
         event_log.clear()
+        clear_cache_binding()
         return out
 
     def run_pool() -> list[str]:
         with Pool(
             processes=workers,
             initializer=_pool_init,
-            initargs=(progress_queue, slot_counter, slot_lock),
+            initargs=(progress_queue, slot_counter, slot_lock, cache_proxy),
         ) as pool:
             return list(pool.imap_unordered(_worker, tasks))
 
     try:
         if workers <= 1:
-            results = _run_with_live(tracker, progress_queue, run_sequential)
+            results = _run_with_live(tracker, progress_queue, cache_proxy, run_sequential)
         else:
-            results = _run_with_live(tracker, progress_queue, run_pool)
+            results = _run_with_live(tracker, progress_queue, cache_proxy, run_pool)
     finally:
+        try:
+            cache_proxy.clear()
+            cache_proxy.shutdown()
+        except (BrokenPipeError, ConnectionError, EOFError, AttributeError):
+            pass
+        cache_manager.shutdown()
         tracker.close_log()
 
     elapsed = time.perf_counter() - t0
