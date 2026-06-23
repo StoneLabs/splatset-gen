@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from background import background_from_config, composite  # noqa: E402
 from camera import camera_from_orbit  # noqa: E402
-from ply_loader import load_ply  # noqa: E402
+from ply_loader import load_ply, format_extent  # noqa: E402
 from render import render  # noqa: E402
 
 
@@ -69,8 +69,8 @@ def main() -> None:
         cfg = yaml.safe_load(f)
 
     print(f"Loading {args.ply} ...")
-    scene = load_ply(args.ply, max_gaussians=args.max_gaussians)
-    print(f"  {scene.num_gaussians} Gaussians")
+    scene, load_stats = load_ply(args.ply, max_gaussians=args.max_gaussians)
+    print(f"  {scene.num_gaussians} Gaussians · extent {format_extent(load_stats)}")
 
     lo, hi = scene.bounds()
     viewmat, k, w, h, _ = camera_from_orbit((lo, hi), width=args.width, height=args.height)

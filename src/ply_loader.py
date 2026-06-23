@@ -27,6 +27,16 @@ REQUIRED_FIELDS = (
 )
 
 
+@dataclass(frozen=True)
+class PlyLoadStats:
+    """Bounding-box size before/after unit-extent normalization."""
+
+    extent_before: tuple[float, float, float]
+    max_extent_before: float
+    extent_after: tuple[float, float, float]
+    max_extent_after: float
+
+
 @dataclass
 class SceneGaussians:
     """Concatenated scene Gaussians with per-point object assignment."""
@@ -69,12 +79,60 @@ def _stack_field(vertex_data, prefix: str, count: int) -> np.ndarray:
     return np.stack([vertex_data[f"{prefix}_{i}"] for i in range(count)], axis=-1)
 
 
+def _normalize_to_unit_extent(
+    means: np.ndarray,
+    scales: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, PlyLoadStats]:
+    """Center at bbox midpoint and scale so the longest axis spans 1 unit."""
+    lo = means.min(axis=0)
+    hi = means.max(axis=0)
+    extent_before = (hi - lo).astype(np.float64)
+    max_before = float(extent_before.max())
+    center = (lo + hi) / 2.0
+    if max_before < 1e-8:
+        centered = means - center
+        lo_a = centered.min(axis=0)
+        hi_a = centered.max(axis=0)
+        extent_after = (hi_a - lo_a).astype(np.float64)
+        stats = PlyLoadStats(
+            extent_before=(float(extent_before[0]), float(extent_before[1]), float(extent_before[2])),
+            max_extent_before=max_before,
+            extent_after=(float(extent_after[0]), float(extent_after[1]), float(extent_after[2])),
+            max_extent_after=float(extent_after.max()),
+        )
+        return centered, scales, stats
+    s = 1.0 / max_before
+    means_out = (means - center) * s
+    scales_out = scales * s
+    lo_a = means_out.min(axis=0)
+    hi_a = means_out.max(axis=0)
+    extent_after = (hi_a - lo_a).astype(np.float64)
+    stats = PlyLoadStats(
+        extent_before=(float(extent_before[0]), float(extent_before[1]), float(extent_before[2])),
+        max_extent_before=max_before,
+        extent_after=(float(extent_after[0]), float(extent_after[1]), float(extent_after[2])),
+        max_extent_after=float(extent_after.max()),
+    )
+    return means_out, scales_out, stats
+
+
+def format_extent(stats: PlyLoadStats) -> str:
+    """Human-readable max bbox extent before→after normalization."""
+    return f"{stats.max_extent_before:.3f}→{stats.max_extent_after:.3f}"
+
+
 def load_ply(
     path: str | Path,
     max_gaussians: int | None = None,
     rng: np.random.Generator | None = None,
-) -> SceneGaussians:
+) -> tuple[SceneGaussians, PlyLoadStats]:
     """Load one 3DGS PLY file as a single-object SceneGaussians (object_id=0).
+
+    Gaussians are centered at the bounding-box midpoint and scaled so the longest
+    axis of the axis-aligned bounds is 1 unit (Gaussian scales are scaled too).
+
+    Returns ``(gaussians, load_stats)`` where ``load_stats`` records bbox extent
+    before and after normalization.
 
     When ``max_gaussians`` is set and the PLY has more points, a random subset is
     taken (without replacement). Pass ``rng`` for reproducible subsampling.
@@ -122,18 +180,22 @@ def load_ply(
     quat_norm = np.linalg.norm(raw_quat, axis=-1, keepdims=True)
     quat_norm = np.maximum(quat_norm, 1e-8)
     quats = raw_quat / quat_norm
+    means, scales, load_stats = _normalize_to_unit_extent(means, scales)
 
     n = means.shape[0]
     object_ids = np.zeros(n, dtype=np.int64)
 
-    return SceneGaussians(
-        means=torch.from_numpy(means),
-        quats=torch.from_numpy(quats),
-        scales=torch.from_numpy(scales),
-        opacities=torch.from_numpy(opacities),
-        sh_dc=torch.from_numpy(sh_dc),
-        sh_rest=torch.from_numpy(sh_rest),
-        object_ids=torch.from_numpy(object_ids),
+    return (
+        SceneGaussians(
+            means=torch.from_numpy(means),
+            quats=torch.from_numpy(quats),
+            scales=torch.from_numpy(scales),
+            opacities=torch.from_numpy(opacities),
+            sh_dc=torch.from_numpy(sh_dc),
+            sh_rest=torch.from_numpy(sh_rest),
+            object_ids=torch.from_numpy(object_ids),
+        ),
+        load_stats,
     )
 
 
