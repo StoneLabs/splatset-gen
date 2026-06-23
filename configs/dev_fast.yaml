@@ -5,7 +5,9 @@ render:
   sh_degree: 0
 
 background:
-  mode: "solid"
+  mode: "image"
+  image_dir: "assets/backgrounds/"
+  resize_mode: "crop"
   solid_color: [0.1, 0.1, 0.1]
 
 scene:
@@ -22,4 +24,4 @@ camera:
 
 generation:
   max_camera_retries: 20
-  max_gaussians_per_object: 50000
+  max_gaussians_per_object: 100000

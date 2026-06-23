@@ -124,6 +124,7 @@ def main(
         workers=workers,
         seed=seed,
         verbose=verbose,
+        project_root=ROOT,
     )
     prepare_output_dir(output, auto_confirm=yes)
     confirm_or_exit(skip=yes)
@@ -137,6 +138,7 @@ def main(
         seed=seed,
         verbose=verbose,
         show_progress=True,
+        project_root=ROOT,
     )
 
 

@@ -6,12 +6,14 @@ import os
 import shutil
 import sys
 import time
-
-import click
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+
+import click
+
+from background import background_from_config, list_background_images
 
 from rich import box
 from rich.console import Console
@@ -189,6 +191,33 @@ def _fmt_range(value: Any) -> str:
     return str(value)
 
 
+def _background_plan_lines(cfg: dict[str, Any], project_root: Path | None) -> list[str]:
+    """Background section lines for the pre-run plan panel."""
+    bg_spec = background_from_config(cfg, base_dir=project_root)
+    lines = [f"  Mode             {bg_spec.mode}"]
+
+    if bg_spec.mode == "image":
+        image_dir = bg_spec.image_dir
+        if image_dir is None:
+            lines.append("  Image dir        [red](not set)[/]")
+        else:
+            try:
+                images = list_background_images(image_dir)
+                names = ", ".join(p.name for p in images[:6])
+                if len(images) > 6:
+                    names += f", … +{len(images) - 6} more"
+                lines.append(f"  Image dir        [cyan]{image_dir}[/]  ({len(images)} files)")
+                lines.append(f"  Images           {names}")
+            except OSError as exc:
+                lines.append(f"  Image dir        [cyan]{image_dir}[/]  [red]({exc})[/]")
+        lines.append(f"  Resize mode      {bg_spec.resize_mode}")
+        lines.append(f"  Letterbox color  {list(bg_spec.solid_color)}")
+    else:
+        lines.append(f"  Solid color      {list(bg_spec.solid_color)}")
+
+    return lines
+
+
 def print_plan(
     *,
     ply_dir: Path,
@@ -200,10 +229,10 @@ def print_plan(
     workers: int,
     seed: int,
     verbose: bool,
+    project_root: Path | None = None,
 ) -> None:
     render = cfg.get("render", {})
     scene = cfg.get("scene", {})
-    bg = cfg.get("background", {})
     camera = cfg.get("camera", {})
     generation = cfg.get("generation", {})
 
@@ -258,8 +287,11 @@ def print_plan(
             f"  Max retries      {camera.get('max_retries', '?')}",
             "",
             "[bold underline]Background[/]",
-            f"  Mode             {bg.get('mode', 'solid')}",
-            f"  Solid color      {bg.get('solid_color', '')}",
+        ]
+    )
+    lines.extend(_background_plan_lines(cfg, project_root))
+    lines.extend(
+        [
             "",
             "[bold underline]Generation[/]",
             f"  Camera retries   {generation.get('max_camera_retries', '?')}",
