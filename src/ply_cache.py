@@ -9,7 +9,6 @@ from multiprocessing.managers import SyncManager
 from multiprocessing.shared_memory import SharedMemory
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 import numpy as np
 import torch
@@ -76,13 +75,15 @@ def _field_memory_bytes(meta: dict[str, dict[str, Any]]) -> int:
     return total
 
 
-def _store_arrays(arrays: dict[str, np.ndarray], token: str) -> dict[str, dict[str, Any]]:
+def _store_arrays(arrays: dict[str, np.ndarray]) -> dict[str, dict[str, Any]]:
     meta: dict[str, dict[str, Any]] = {}
     for name, arr in arrays.items():
         if arr.nbytes == 0:
             meta[name] = {"empty": True, "shape": arr.shape, "dtype": str(arr.dtype)}
             continue
-        shm = SharedMemory(create=True, size=arr.nbytes, name=f"splat_ply_{token}_{name}")
+        # Let Python assign the segment name — custom names like
+        # ``splat_ply_<uuid>_opacities`` exceed macOS POSIX shm limits (~31 chars).
+        shm = SharedMemory(create=True, size=arr.nbytes)
         buf = np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)
         buf[:] = arr
         meta[name] = {
@@ -194,8 +195,7 @@ class _PlyCacheCore:
             self._emit("cache_claim", worker_id, display_name, 1)
 
             gaussians, stats = _load_ply_from_disk(Path(resolved))
-            token = uuid4().hex[:12]
-            fields = _store_arrays(_gaussians_to_arrays(gaussians), token)
+            fields = _store_arrays(_gaussians_to_arrays(gaussians))
             entry = self._entries[resolved]
             entry.fields = fields
             entry.stats = _stats_to_dict(stats)
