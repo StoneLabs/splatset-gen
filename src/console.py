@@ -58,6 +58,8 @@ class WorkerState:
     elapsed: float = 0.0
     started_at: float | None = None
     render_pct: float | None = None
+    num_gaussians: int | None = None
+    raster_started_at: float | None = None
     phase: str = "—"
     detail: str = "—"
 
@@ -123,8 +125,16 @@ class ProgressTracker:
         st.started_at = time.perf_counter()
         st.elapsed = 0.0
         st.render_pct = None
+        st.num_gaussians = None
+        st.raster_started_at = None
         st.phase = "starting"
         st.detail = "—"
+
+    def on_gaussians(self, worker_id: int, count: int) -> None:
+        st = self.worker_states[worker_id]
+        if st.status == "working":
+            st.num_gaussians = count
+            st.raster_started_at = None
 
     def on_done(self, worker_id: int, sample_id: str, elapsed: float, error: str | None) -> None:
         st = self.worker_states[worker_id]
@@ -140,6 +150,8 @@ class ProgressTracker:
         st.elapsed = 0.0
         st.started_at = None
         st.render_pct = None
+        st.num_gaussians = None
+        st.raster_started_at = None
         st.phase = "—"
         st.detail = "—"
 
@@ -147,6 +159,8 @@ class ProgressTracker:
         st = self.worker_states[worker_id]
         if st.status == "working":
             st.render_pct = max(0.0, min(100.0, pct))
+            if st.raster_started_at is None:
+                st.raster_started_at = time.perf_counter()
 
     def on_status(self, worker_id: int, phase: str, detail: str) -> None:
         st = self.worker_states[worker_id]
@@ -169,6 +183,29 @@ class ProgressTracker:
             completed=self.completed,
             active=f"{active} active",
         )
+
+
+def _format_gaussians_per_sec(rate: float) -> str:
+    if rate >= 1_000_000:
+        return f"{rate / 1_000_000:.2f}M/s"
+    if rate >= 1_000:
+        return f"{rate / 1_000:.1f}K/s"
+    return f"{rate:.0f}/s"
+
+
+def _worker_gaussians_per_sec(st: WorkerState, now: float) -> str:
+    if (
+        st.status != "working"
+        or st.num_gaussians is None
+        or st.render_pct is None
+        or st.raster_started_at is None
+    ):
+        return "—"
+    elapsed = now - st.raster_started_at
+    if elapsed <= 0:
+        return "—"
+    processed = st.num_gaussians * st.render_pct / 100.0
+    return _format_gaussians_per_sec(processed / elapsed)
 
 
 def _status_style(status: str) -> str:
@@ -211,11 +248,13 @@ def build_live_render(tracker: ProgressTracker) -> Table:
     worker_table.add_column("Status", width=10)
     worker_table.add_column("Sample", width=10)
     worker_table.add_column("Render", justify="right", width=7)
+    worker_table.add_column("Gauss/s", justify="right", width=9)
     if tracker.verbose:
         worker_table.add_column("Phase", width=10)
         worker_table.add_column("Detail", min_width=24, no_wrap=False)
     worker_table.add_column("Elapsed", justify="right", width=10)
 
+    now = time.perf_counter()
     for wid in sorted(tracker.worker_states):
         st = tracker.worker_states[wid]
         elapsed = f"{st.elapsed:.1f}s" if st.status == "working" else "—"
@@ -223,11 +262,13 @@ def build_live_render(tracker: ProgressTracker) -> Table:
             render = f"{int(st.render_pct)}%"
         else:
             render = "—"
+        gauss_rate = _worker_gaussians_per_sec(st, now)
         row: list[Any] = [
             _worker_label(wid, st.status),
             Text(st.status, style=_status_style(st.status)),
             st.sample_id,
             render,
+            gauss_rate,
         ]
         if tracker.verbose:
             row.extend([st.phase, st.detail])

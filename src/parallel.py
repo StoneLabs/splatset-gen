@@ -93,6 +93,9 @@ def _drain_queue(queue: Any, tracker: ProgressTracker) -> None:
         elif kind == "render":
             _, worker_id, pct = msg
             tracker.on_render(worker_id, pct)
+        elif kind == "gaussians":
+            _, worker_id, count = msg
+            tracker.on_gaussians(worker_id, count)
         elif kind == "status":
             _, worker_id, phase, detail = msg
             tracker.on_status(worker_id, phase, detail)

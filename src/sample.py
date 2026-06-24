@@ -86,6 +86,8 @@ def generate_one_sample(
                 "rasterize",
                 f"{scene.num_gaussians:,} gauss · {width}×{height} · sh_degree={sh_degree}",
             )
+            if event_log.is_active():
+                event_log.render_gaussians(scene.num_gaussians)
             out = render(
                 scene,
                 viewmat,

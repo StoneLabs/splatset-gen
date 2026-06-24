@@ -47,6 +47,11 @@ def render_progress(pct: float) -> None:
     emit("render", _worker_slot, float(pct))
 
 
+def render_gaussians(count: int) -> None:
+    """Report Gaussian count for gaussians/sec in the live worker table."""
+    emit("gaussians", _worker_slot, int(count))
+
+
 def worker_status(phase: str, detail: str = "") -> None:
     """Update worker table phase/detail (verbose UI)."""
     emit("status", _worker_slot, phase, detail)
