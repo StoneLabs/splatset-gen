@@ -7,10 +7,11 @@ from typing import Any
 
 import numpy as np
 import torch
-from plyfile import PlyData
 
 import event_log
 from ply_loader import SceneGaussians, format_extent, load_ply
+
+import ply_manager
 
 
 def _euler_matrix_xyz(rx: float, ry: float, rz: float) -> np.ndarray:
@@ -150,29 +151,57 @@ def build_random_scene(
             event_log.worker_status("scene", f"load {ply_path.name}")
 
         n_total: int | None = None
-        if verbose and max_g is not None:
-            n_total = len(PlyData.read(str(ply_path))["vertex"])
-
-        obj, load_stats = load_ply(ply_path, max_gaussians=max_g, rng=rng)
-        n_loaded = obj.num_gaussians
-
-        if verbose and event_log.is_active():
-            if n_total is not None and n_total > n_loaded:
-                count_label = f"{n_loaded:,}/{n_total:,} gaussians (subset)"
-            else:
-                count_label = f"{n_loaded:,} gaussians"
-            extent_label = format_extent(load_stats)
-            event_log.log(
-                f"[dim]ply[/] oid={object_id} {ply_path.name} · {count_label} · "
-                f"extent {extent_label}"
+        if ply_manager.is_active():
+            subsample_seed = int(rng.integers(0, 2**31))
+            cached, load_stats, n_total = ply_manager.acquire(
+                ply_path, max_gaussians=max_g, subsample_seed=subsample_seed
             )
+            try:
+                obj = cached
+                n_loaded = obj.num_gaussians
 
-        placement = rng.uniform(pos_range[0], pos_range[1], size=3).astype(np.float32)
-        euler = np.deg2rad(rng.uniform(-rot_max, rot_max, size=3))
-        rotation = _euler_matrix_xyz(*euler)
-        scale = float(rng.uniform(scale_jitter[0], scale_jitter[1]))
+                if verbose and event_log.is_active():
+                    if n_total is not None and n_total > n_loaded:
+                        count_label = f"{n_loaded:,}/{n_total:,} gaussians (subset)"
+                    else:
+                        count_label = f"{n_loaded:,} gaussians"
+                    extent_label = format_extent(load_stats)
+                    event_log.log(
+                        f"[dim]ply[/] oid={object_id} {ply_path.name} · {count_label} · "
+                        f"extent {extent_label}"
+                    )
 
-        transformed = _transform_gaussians(obj, rotation, placement, scale, object_id)
+                placement = rng.uniform(pos_range[0], pos_range[1], size=3).astype(np.float32)
+                euler = np.deg2rad(rng.uniform(-rot_max, rot_max, size=3))
+                rotation = _euler_matrix_xyz(*euler)
+                scale = float(rng.uniform(scale_jitter[0], scale_jitter[1]))
+
+                transformed = _transform_gaussians(obj, rotation, placement, scale, object_id)
+            finally:
+                ply_manager.release(ply_path)
+        else:
+            obj, load_stats, n_total = load_ply(ply_path, max_gaussians=max_g, rng=rng)
+            n_loaded = obj.num_gaussians
+            n_loaded = obj.num_gaussians
+
+            if verbose and event_log.is_active():
+                if n_total is not None and n_total > n_loaded:
+                    count_label = f"{n_loaded:,}/{n_total:,} gaussians (subset)"
+                else:
+                    count_label = f"{n_loaded:,} gaussians"
+                extent_label = format_extent(load_stats)
+                event_log.log(
+                    f"[dim]ply[/] oid={object_id} {ply_path.name} · {count_label} · "
+                    f"extent {extent_label}"
+                )
+
+            placement = rng.uniform(pos_range[0], pos_range[1], size=3).astype(np.float32)
+            euler = np.deg2rad(rng.uniform(-rot_max, rot_max, size=3))
+            rotation = _euler_matrix_xyz(*euler)
+            scale = float(rng.uniform(scale_jitter[0], scale_jitter[1]))
+
+            transformed = _transform_gaussians(obj, rotation, placement, scale, object_id)
+
         parts.append(transformed)
         metadata.append(
             {

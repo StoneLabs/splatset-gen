@@ -17,6 +17,7 @@ import yaml
 import event_log
 from console import ProgressTracker, build_live_render, print_summary
 from export import save_config_snapshot
+from ply_manager import PlyManagerServer, bind as bind_ply_manager, clear as clear_ply_manager
 from rich.live import Live
 from sample import generate_one_sample
 
@@ -24,13 +25,26 @@ _PROGRESS_QUEUE: Any = None
 _WORKER_SLOT: int = 0
 
 
-def _pool_init(progress_queue: Any, slot_counter: Any, slot_lock: Any) -> None:
+def _pool_init(
+    progress_queue: Any,
+    slot_counter: Any,
+    slot_lock: Any,
+    ply_server: PlyManagerServer | None,
+) -> None:
     global _PROGRESS_QUEUE, _WORKER_SLOT
     _PROGRESS_QUEUE = progress_queue
-    with slot_lock:
-        _WORKER_SLOT = slot_counter.value
-        slot_counter.value += 1
-    event_log.bind(progress_queue, _WORKER_SLOT)
+    if slot_counter is not None and slot_lock is not None:
+        with slot_lock:
+            _WORKER_SLOT = slot_counter.value
+            slot_counter.value += 1
+    else:
+        _WORKER_SLOT = 0
+    if progress_queue is not None:
+        event_log.bind(progress_queue, _WORKER_SLOT)
+    if ply_server is not None:
+        bind_ply_manager(ply_server.client_for(_WORKER_SLOT))
+    else:
+        bind_ply_manager(None)
 
 
 def _emit(kind: str, *payload: Any) -> None:
@@ -169,11 +183,39 @@ def generate_dataset_parallel(
     )
     t0 = time.perf_counter()
 
+    gen_cfg = config.get("generation", {})
+    use_shared_cache = gen_cfg.get("ply_shared_cache", True)
+    cache_ttl = float(gen_cfg.get("ply_cache_ttl_sec", 30.0))
+    ply_server: PlyManagerServer | None = None
+    if use_shared_cache:
+        ply_server = PlyManagerServer(
+            workers=workers,
+            cache_ttl_sec=cache_ttl,
+            stats_path=output_dir / "ply_cache.log",
+        )
+        ply_server.start()
+
     if not show_progress:
-        if workers <= 1:
-            return [_worker(t) for t in tasks]
-        with Pool(processes=workers) as pool:
-            return pool.map(_worker, tasks)
+        try:
+            if workers <= 1:
+                global _PROGRESS_QUEUE, _WORKER_SLOT
+                _WORKER_SLOT = 0
+                if ply_server is not None:
+                    bind_ply_manager(ply_server.client_for(0))
+                return [_worker(t) for t in tasks]
+            slot_manager = Manager()
+            slot_counter = slot_manager.Value("i", 0)
+            slot_lock = slot_manager.Lock()
+            with Pool(
+                processes=workers,
+                initializer=_pool_init,
+                initargs=(None, slot_counter, slot_lock, ply_server),
+            ) as pool:
+                return pool.map(_worker, tasks)
+        finally:
+            clear_ply_manager()
+            if ply_server is not None:
+                ply_server.stop()
 
     manager = Manager()
     progress_queue = manager.Queue()
@@ -185,18 +227,21 @@ def generate_dataset_parallel(
         _PROGRESS_QUEUE = progress_queue
         _WORKER_SLOT = 0
         event_log.bind(progress_queue, 0)
+        if ply_server is not None:
+            bind_ply_manager(ply_server.client_for(0))
         out: list[str] = []
         for task in tasks:
             out.append(_worker(task))
         _PROGRESS_QUEUE = None
         event_log.clear()
+        clear_ply_manager()
         return out
 
     def run_pool() -> list[str]:
         with Pool(
             processes=workers,
             initializer=_pool_init,
-            initargs=(progress_queue, slot_counter, slot_lock),
+            initargs=(progress_queue, slot_counter, slot_lock, ply_server),
         ) as pool:
             return list(pool.imap_unordered(_worker, tasks))
 
@@ -206,6 +251,9 @@ def generate_dataset_parallel(
         else:
             results = _run_with_live(tracker, progress_queue, run_pool)
     finally:
+        clear_ply_manager()
+        if ply_server is not None:
+            ply_server.stop()
         tracker.close_log()
 
     elapsed = time.perf_counter() - t0

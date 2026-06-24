@@ -27,4 +27,5 @@ camera:
 generation:
   max_camera_retries: 20
   max_gaussians_per_object: 30000
-  ply_cache_ttl_sec: 30
+  ply_cache_ttl_sec: 5
+  ply_shared_cache: true
