@@ -121,39 +121,7 @@ def format_extent(stats: PlyLoadStats) -> str:
     return f"{stats.max_extent_before:.3f}→{stats.max_extent_after:.3f}"
 
 
-def load_ply(
-    path: str | Path,
-    max_gaussians: int | None = None,
-    rng: np.random.Generator | None = None,
-) -> tuple[SceneGaussians, PlyLoadStats]:
-    """Load one 3DGS PLY file as a single-object SceneGaussians (object_id=0).
-
-    Gaussians are centered at the bounding-box midpoint and scaled so the longest
-    axis of the axis-aligned bounds is 1 unit (Gaussian scales are scaled too).
-
-    Returns ``(gaussians, load_stats)`` where ``load_stats`` records bbox extent
-    before and after normalization.
-
-    When ``max_gaussians`` is set and the PLY has more points, a random subset is
-    taken (without replacement). Pass ``rng`` for reproducible subsampling.
-    """
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(path)
-
-    ply = PlyData.read(str(path))
-    if "vertex" not in ply:
-        raise ValueError(f"{path} has no vertex element")
-
-    vertex = ply["vertex"].data
-    _require_fields(vertex, path)
-
-    if max_gaussians is not None and len(vertex) > max_gaussians:
-        if rng is None:
-            rng = np.random.default_rng()
-        pick = rng.choice(len(vertex), size=max_gaussians, replace=False)
-        vertex = vertex[pick]
-
+def _scene_from_vertex(vertex, path: Path) -> tuple[SceneGaussians, PlyLoadStats]:
     means = np.stack([vertex["x"], vertex["y"], vertex["z"]], axis=-1).astype(np.float32)
     raw_opacity = vertex["opacity"].astype(np.float32)
     raw_scale = _stack_field(vertex, "scale", 3).astype(np.float32)
@@ -197,6 +165,95 @@ def load_ply(
         ),
         load_stats,
     )
+
+
+def subsample_gaussians(
+    gaussians: SceneGaussians,
+    max_gaussians: int,
+    rng: np.random.Generator,
+) -> SceneGaussians:
+    """Return a random subset of Gaussians (new tensors, not shared with source)."""
+    n = gaussians.num_gaussians
+    if n <= max_gaussians:
+        return gaussians
+    pick = torch.from_numpy(rng.choice(n, size=max_gaussians, replace=False).astype(np.int64))
+    return SceneGaussians(
+        means=gaussians.means[pick],
+        quats=gaussians.quats[pick],
+        scales=gaussians.scales[pick],
+        opacities=gaussians.opacities[pick],
+        sh_dc=gaussians.sh_dc[pick],
+        sh_rest=gaussians.sh_rest[pick],
+        object_ids=gaussians.object_ids[pick],
+    )
+
+
+def share_gaussians(gaussians: SceneGaussians) -> SceneGaussians:
+    """Mark Gaussian tensors as shared-memory for cross-process readers."""
+    gaussians.means.share_memory_()
+    gaussians.quats.share_memory_()
+    gaussians.scales.share_memory_()
+    gaussians.opacities.share_memory_()
+    gaussians.sh_dc.share_memory_()
+    gaussians.sh_rest.share_memory_()
+    gaussians.object_ids.share_memory_()
+    return gaussians
+
+
+def load_ply(
+    path: str | Path,
+    max_gaussians: int | None = None,
+    rng: np.random.Generator | None = None,
+) -> tuple[SceneGaussians, PlyLoadStats, int]:
+    """Load one 3DGS PLY file as a single-object SceneGaussians (object_id=0).
+
+    Gaussians are centered at the bounding-box midpoint and scaled so the longest
+    axis of the axis-aligned bounds is 1 unit (Gaussian scales are scaled too).
+
+    Returns ``(gaussians, load_stats, total_gaussians)`` where ``load_stats`` records
+    bbox extent before and after normalization and ``total_gaussians`` is the vertex
+    count in the file before any subsampling.
+
+    When ``max_gaussians`` is set and the PLY has more points, a random subset is
+    taken (without replacement). Pass ``rng`` for reproducible subsampling.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+    ply = PlyData.read(str(path))
+    if "vertex" not in ply:
+        raise ValueError(f"{path} has no vertex element")
+
+    vertex = ply["vertex"].data
+    _require_fields(vertex, path)
+
+    total_gaussians = len(vertex)
+    if max_gaussians is not None and total_gaussians > max_gaussians:
+        if rng is None:
+            rng = np.random.default_rng()
+        pick = rng.choice(total_gaussians, size=max_gaussians, replace=False)
+        vertex = vertex[pick]
+
+    gaussians, stats = _scene_from_vertex(vertex, path)
+    return gaussians, stats, total_gaussians
+
+
+def load_ply_full(path: str | Path) -> tuple[SceneGaussians, PlyLoadStats, int]:
+    """Load full normalized PLY (no subsampling). Returns total vertex count from file."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+    ply = PlyData.read(str(path))
+    if "vertex" not in ply:
+        raise ValueError(f"{path} has no vertex element")
+
+    vertex = ply["vertex"].data
+    _require_fields(vertex, path)
+    total_gaussians = len(vertex)
+    gaussians, stats = _scene_from_vertex(vertex, path)
+    return gaussians, stats, total_gaussians
 
 
 def write_synthetic_ply(path: str | Path, num_gaussians: int = 4) -> Path:

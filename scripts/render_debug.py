@@ -69,7 +69,7 @@ def main() -> None:
         cfg = yaml.safe_load(f)
 
     print(f"Loading {args.ply} ...")
-    scene, load_stats = load_ply(args.ply, max_gaussians=args.max_gaussians)
+    scene, load_stats, _total = load_ply(args.ply, max_gaussians=args.max_gaussians)
     print(f"  {scene.num_gaussians} Gaussians · extent {format_extent(load_stats)}")
 
     lo, hi = scene.bounds()
