@@ -6,107 +6,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import torch
 
 import event_log
-from ply_loader import SceneGaussians, format_extent, load_ply
+from cached_scene import CachedScene, euler_placement
+from ply_loader import format_extent, load_ply
 
 import ply_manager
-
-
-def _euler_matrix_xyz(rx: float, ry: float, rz: float) -> np.ndarray:
-    cx, sx = np.cos(rx), np.sin(rx)
-    cy, sy = np.cos(ry), np.sin(ry)
-    cz, sz = np.cos(rz), np.sin(rz)
-    rx_m = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
-    ry_m = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
-    rz_m = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
-    return rz_m @ ry_m @ rx_m
-
-
-def _matrix_to_quat_wxyz(rot: np.ndarray) -> torch.Tensor:
-    m = rot.astype(np.float64)
-    trace = m[0, 0] + m[1, 1] + m[2, 2]
-    if trace > 0:
-        s = 0.5 / np.sqrt(trace + 1.0)
-        w = 0.25 / s
-        x = (m[2, 1] - m[1, 2]) * s
-        y = (m[0, 2] - m[2, 0]) * s
-        z = (m[1, 0] - m[0, 1]) * s
-    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
-        s = 2.0 * np.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2])
-        w = (m[2, 1] - m[1, 2]) / s
-        x = 0.25 * s
-        y = (m[0, 1] + m[1, 0]) / s
-        z = (m[0, 2] + m[2, 0]) / s
-    elif m[1, 1] > m[2, 2]:
-        s = 2.0 * np.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2])
-        w = (m[0, 2] - m[2, 0]) / s
-        x = (m[0, 1] + m[1, 0]) / s
-        y = 0.25 * s
-        z = (m[1, 2] + m[2, 1]) / s
-    else:
-        s = 2.0 * np.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1])
-        w = (m[1, 0] - m[0, 1]) / s
-        x = (m[0, 2] + m[2, 0]) / s
-        y = (m[1, 2] + m[2, 1]) / s
-        z = 0.25 * s
-    q = torch.tensor([w, x, y, z], dtype=torch.float32)
-    return q / q.norm()
-
-
-def _quat_multiply(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
-    w1, x1, y1, z1 = q1.unbind(-1)
-    w2, x2, y2, z2 = q2.unbind(-1)
-    out = torch.stack(
-        [
-            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-        ],
-        dim=-1,
-    )
-    return out / out.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-
-
-def _transform_gaussians(
-    gaussians: SceneGaussians,
-    rotation: np.ndarray,
-    translation: np.ndarray,
-    scale: float,
-    object_id: int,
-) -> SceneGaussians:
-    rot = torch.from_numpy(rotation.astype(np.float32))
-    trans = torch.from_numpy(translation.astype(np.float32))
-    q_rot = _matrix_to_quat_wxyz(rotation)
-
-    means = gaussians.means @ rot.T * scale + trans
-    quats = _quat_multiply(q_rot.expand_as(gaussians.quats), gaussians.quats)
-    scales = gaussians.scales * scale
-    object_ids = torch.full_like(gaussians.object_ids, object_id)
-
-    return SceneGaussians(
-        means=means,
-        quats=quats,
-        scales=scales,
-        opacities=gaussians.opacities,
-        sh_dc=gaussians.sh_dc,
-        sh_rest=gaussians.sh_rest,
-        object_ids=object_ids,
-    )
-
-
-def _concat_gaussians(parts: list[SceneGaussians]) -> SceneGaussians:
-    return SceneGaussians(
-        means=torch.cat([p.means for p in parts]),
-        quats=torch.cat([p.quats for p in parts]),
-        scales=torch.cat([p.scales for p in parts]),
-        opacities=torch.cat([p.opacities for p in parts]),
-        sh_dc=torch.cat([p.sh_dc for p in parts]),
-        sh_rest=torch.cat([p.sh_rest for p in parts]),
-        object_ids=torch.cat([p.object_ids for p in parts]),
-    )
 
 
 def build_random_scene(
@@ -114,8 +19,8 @@ def build_random_scene(
     config: dict[str, Any],
     rng: np.random.Generator,
     verbose: bool = False,
-) -> tuple[SceneGaussians, list[dict[str, Any]]]:
-    """Load, transform, and concatenate random PLY objects into one scene."""
+) -> tuple[CachedScene, list[dict[str, Any]]]:
+    """Load, place, and reference random PLY objects (Gaussian data stays in cache)."""
     if not ply_paths:
         raise ValueError("ply_paths is empty")
 
@@ -143,49 +48,61 @@ def build_random_scene(
             f"[dim]scene[/] {num_objects} slots from {len(ply_paths)} PLYs{cap_note}: {summary}"
         )
 
-    parts: list[SceneGaussians] = []
+    objects: list = []
     metadata: list[dict[str, Any]] = []
 
     for object_id, ply_path in enumerate(chosen):
-        if verbose and event_log.is_active():
-            event_log.worker_status("scene", f"load {ply_path.name}")
+        placement = rng.uniform(pos_range[0], pos_range[1], size=3).astype(np.float32)
+        euler = np.deg2rad(rng.uniform(-rot_max, rot_max, size=3))
+        scale = float(rng.uniform(scale_jitter[0], scale_jitter[1]))
 
-        n_total: int | None = None
         if ply_manager.is_active():
-            subsample_seed = int(rng.integers(0, 2**31))
-            cached, load_stats, n_total = ply_manager.acquire(
-                ply_path, max_gaussians=max_g, subsample_seed=subsample_seed
-            )
-            try:
-                obj = cached
-                n_loaded = obj.num_gaussians
-
-                if verbose and event_log.is_active():
-                    if n_total is not None and n_total > n_loaded:
-                        count_label = f"{n_loaded:,}/{n_total:,} gaussians (subset)"
-                    else:
-                        count_label = f"{n_loaded:,} gaussians"
-                    extent_label = format_extent(load_stats)
-                    event_log.log(
-                        f"[dim]ply[/] oid={object_id} {ply_path.name} · {count_label} · "
-                        f"extent {extent_label}"
-                    )
-
-                placement = rng.uniform(pos_range[0], pos_range[1], size=3).astype(np.float32)
-                euler = np.deg2rad(rng.uniform(-rot_max, rot_max, size=3))
-                rotation = _euler_matrix_xyz(*euler)
-                scale = float(rng.uniform(scale_jitter[0], scale_jitter[1]))
-
-                transformed = _transform_gaussians(obj, rotation, placement, scale, object_id)
-            finally:
-                ply_manager.release(ply_path)
-        else:
-            obj, load_stats, n_total = load_ply(ply_path, max_gaussians=max_g, rng=rng)
-            n_loaded = obj.num_gaussians
-            n_loaded = obj.num_gaussians
+            event_log.worker_status("waiting for load", ply_path.name)
+            event_log.report_memory()
+            gaussians, load_stats, n_total, local_lo, local_hi = ply_manager.acquire(ply_path)
+            event_log.report_memory()
+            n_source = gaussians.num_gaussians
+            pick: np.ndarray | None = None
+            if max_g is not None and n_source > max_g:
+                pick = rng.choice(n_source, size=max_g, replace=False).astype(np.int64)
+            n_loaded = int(pick.shape[0]) if pick is not None else n_source
 
             if verbose and event_log.is_active():
-                if n_total is not None and n_total > n_loaded:
+                if pick is not None and n_total > n_loaded:
+                    count_label = f"{n_loaded:,}/{n_total:,} gaussians (subset)"
+                else:
+                    count_label = f"{n_loaded:,} gaussians"
+                extent_label = format_extent(load_stats)
+                event_log.log(
+                    f"[dim]ply[/] oid={object_id} {ply_path.name} · {count_label} · "
+                    f"extent {extent_label} · [red]cache ref[/]"
+                )
+
+            objects.append(
+                euler_placement(
+                    gaussians,
+                    euler,
+                    placement,
+                    scale,
+                    object_id,
+                    pick=pick,
+                    ply_path=ply_path,
+                    from_cache=True,
+                    local_lo=local_lo,
+                    local_hi=local_hi,
+                )
+            )
+        else:
+            if verbose and event_log.is_active():
+                event_log.worker_status("waiting for load", ply_path.name)
+            event_log.report_memory()
+            gaussians, load_stats, n_total = load_ply(ply_path, max_gaussians=max_g, rng=rng)
+            n_loaded = gaussians.num_gaussians
+            event_log.report_memory()
+            lo, hi = gaussians.bounds()
+
+            if verbose and event_log.is_active():
+                if max_g is not None and n_total > n_loaded:
                     count_label = f"{n_loaded:,}/{n_total:,} gaussians (subset)"
                 else:
                     count_label = f"{n_loaded:,} gaussians"
@@ -195,14 +112,21 @@ def build_random_scene(
                     f"extent {extent_label}"
                 )
 
-            placement = rng.uniform(pos_range[0], pos_range[1], size=3).astype(np.float32)
-            euler = np.deg2rad(rng.uniform(-rot_max, rot_max, size=3))
-            rotation = _euler_matrix_xyz(*euler)
-            scale = float(rng.uniform(scale_jitter[0], scale_jitter[1]))
+            objects.append(
+                euler_placement(
+                    gaussians,
+                    euler,
+                    placement,
+                    scale,
+                    object_id,
+                    pick=None,
+                    ply_path=None,
+                    from_cache=False,
+                    local_lo=lo,
+                    local_hi=hi,
+                )
+            )
 
-            transformed = _transform_gaussians(obj, rotation, placement, scale, object_id)
-
-        parts.append(transformed)
         metadata.append(
             {
                 "object_id": object_id,
@@ -224,4 +148,4 @@ def build_random_scene(
                 f"scale={scale:.2f}"
             )
 
-    return _concat_gaussians(parts), metadata
+    return CachedScene(objects=objects), metadata

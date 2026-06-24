@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from memutil import self_rss_kb
+
 _queue: Any = None
 _worker_slot: int = 0
 _sample_id: str = ""
@@ -55,3 +57,8 @@ def render_gaussians(count: int) -> None:
 def worker_status(phase: str, detail: str = "") -> None:
     """Update worker table phase/detail (verbose UI)."""
     emit("status", _worker_slot, phase, detail)
+
+
+def report_memory() -> None:
+    """Report this worker's RSS for the live worker table."""
+    emit("memory", _worker_slot, self_rss_kb())

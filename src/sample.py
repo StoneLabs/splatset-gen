@@ -54,127 +54,130 @@ def generate_one_sample(
 
     _vstatus(verbose, "scene", "building…")
     scene, objects_meta = build_random_scene(ply_paths, config, rng, verbose=verbose)
-    lo, hi = scene.bounds()
-    background = background_from_config(config, base_dir=project_root)
-    scene_detail = (
-        f"{scene.num_objects} obj · {scene.num_gaussians:,} gauss · "
-        f"[{lo[0]:.1f},{lo[1]:.1f},{lo[2]:.1f}]→[{hi[0]:.1f},{hi[1]:.1f},{hi[2]:.1f}]"
-    )
-    _vstatus(verbose, "scene", scene_detail)
-    _vlog(verbose, f"[dim]scene[/] {scene_detail}")
+    try:
+        lo, hi = scene.bounds()
+        background = background_from_config(config, base_dir=project_root)
+        scene_detail = (
+            f"{scene.num_objects} obj · {scene.num_gaussians:,} gauss · "
+            f"[{lo[0]:.1f},{lo[1]:.1f},{lo[2]:.1f}]→[{hi[0]:.1f},{hi[1]:.1f},{hi[2]:.1f}]"
+        )
+        _vstatus(verbose, "scene", scene_detail)
+        _vlog(verbose, f"[dim]scene[/] {scene_detail}")
 
-    last_error: Exception | None = None
-    for attempt in range(max_camera_retries):
-        try:
-            _vstatus(verbose, "camera", f"attempt {attempt + 1}/{max_camera_retries}")
-            viewmat, k, width, height, fov_deg = sample_random_camera(
-                (lo, hi), config, rng, scene_means=scene.means
-            )
-            cam_detail = f"{width}×{height} · fov {fov_deg:.1f}°"
-            _vstatus(verbose, "camera", cam_detail)
-            cam_pos = camera_position_from_viewmat(viewmat).detach().cpu().numpy()
-            centroid = (lo + hi) / 2.0
-            dist = float(np.linalg.norm(cam_pos - centroid))
-            _vlog(
-                verbose,
-                f"[dim]camera[/] {cam_detail} · dist={dist:.2f} · "
-                f"eye=[{cam_pos[0]:+.2f},{cam_pos[1]:+.2f},{cam_pos[2]:+.2f}]",
-            )
+        last_error: Exception | None = None
+        for attempt in range(max_camera_retries):
+            try:
+                _vstatus(verbose, "camera", f"attempt {attempt + 1}/{max_camera_retries}")
+                viewmat, k, width, height, fov_deg = sample_random_camera(
+                    (lo, hi), config, rng, scene_means=None
+                )
+                cam_detail = f"{width}×{height} · fov {fov_deg:.1f}°"
+                _vstatus(verbose, "camera", cam_detail)
+                cam_pos = camera_position_from_viewmat(viewmat).detach().cpu().numpy()
+                centroid = (lo + hi) / 2.0
+                dist = float(np.linalg.norm(cam_pos - centroid))
+                _vlog(
+                    verbose,
+                    f"[dim]camera[/] {cam_detail} · dist={dist:.2f} · "
+                    f"eye=[{cam_pos[0]:+.2f},{cam_pos[1]:+.2f},{cam_pos[2]:+.2f}]",
+                )
 
-            _vstatus(
-                verbose,
-                "rasterize",
-                f"{scene.num_gaussians:,} gauss · {width}×{height} · sh_degree={sh_degree}",
-            )
-            if event_log.is_active():
-                event_log.render_gaussians(scene.num_gaussians)
-            out = render(
-                scene,
-                viewmat,
-                k,
-                width,
-                height,
-                sh_degree=sh_degree,
-                verbose=verbose,
-            )
-            alpha_max = float(out.alpha.max().item())
-            fg_pixels = int((out.alpha > alpha_threshold).sum().item())
-            _vstatus(
-                verbose,
-                "rasterize",
-                f"done · α_max={alpha_max:.3f} · fg={fg_pixels:,}px",
-            )
-            _vlog(
-                verbose,
-                f"[dim]rasterize[/] α_max={alpha_max:.3f} fg_pixels={fg_pixels:,}",
-            )
-            if out.alpha.max() < alpha_threshold:
-                raise ValueError("Render has insufficient foreground coverage")
+                _vstatus(
+                    verbose,
+                    "rasterize",
+                    f"{scene.num_gaussians:,} gauss · {width}×{height} · sh_degree={sh_degree}",
+                )
+                if event_log.is_active():
+                    event_log.render_gaussians(scene.num_gaussians)
+                out = render(
+                    scene,
+                    viewmat,
+                    k,
+                    width,
+                    height,
+                    sh_degree=sh_degree,
+                    verbose=verbose,
+                )
+                alpha_max = float(out.alpha.max().item())
+                fg_pixels = int((out.alpha > alpha_threshold).sum().item())
+                _vstatus(
+                    verbose,
+                    "rasterize",
+                    f"done · α_max={alpha_max:.3f} · fg={fg_pixels:,}px",
+                )
+                _vlog(
+                    verbose,
+                    f"[dim]rasterize[/] α_max={alpha_max:.3f} fg_pixels={fg_pixels:,}",
+                )
+                if out.alpha.max() < alpha_threshold:
+                    raise ValueError("Render has insufficient foreground coverage")
 
-            if background.mode == "image":
-                bg_hint = f"random from {background.image_dir.name if background.image_dir else '?'}"
-            else:
-                bg_hint = f"solid {list(background.solid_color)}"
-            _vstatus(verbose, "composite", bg_hint)
-            rgb, bg_meta = composite(
-                out.fg_rgb, out.alpha, background, width, height, rng=rng
-            )
-            if bg_meta.get("mode") == "image":
-                comp_detail = f"{bg_meta.get('image', '?')} · {bg_meta.get('resize_mode', 'crop')}"
-            else:
-                comp_detail = f"solid {bg_meta.get('color', [])}"
-            _vstatus(verbose, "composite", comp_detail)
-            _vlog(verbose, f"[dim]composite[/] {comp_detail}")
+                if background.mode == "image":
+                    bg_hint = f"random from {background.image_dir.name if background.image_dir else '?'}"
+                else:
+                    bg_hint = f"solid {list(background.solid_color)}"
+                _vstatus(verbose, "composite", bg_hint)
+                rgb, bg_meta = composite(
+                    out.fg_rgb, out.alpha, background, width, height, rng=rng
+                )
+                if bg_meta.get("mode") == "image":
+                    comp_detail = f"{bg_meta.get('image', '?')} · {bg_meta.get('resize_mode', 'crop')}"
+                else:
+                    comp_detail = f"solid {bg_meta.get('color', [])}"
+                _vstatus(verbose, "composite", comp_detail)
+                _vlog(verbose, f"[dim]composite[/] {comp_detail}")
 
-            _vstatus(verbose, "pick", f"α>{alpha_threshold}")
-            x, y, clicked_object_id = sample_click(
-                out.alpha, out.object_id_map, alpha_threshold, rng
-            )
-            mask = object_mask(
-                out.object_weights,
-                clicked_object_id,
-                mode=mask_mode,
-                weight_threshold=mask_weight_threshold,
-            )
-            mask_pixels = count_mask_pixels(mask, mode=mask_mode)
-            pick_detail = (
-                f"oid={clicked_object_id} @ ({x},{y}) · mask={mask_pixels:,}px · {mask_mode}"
-            )
-            _vstatus(verbose, "pick", pick_detail)
-            _vlog(verbose, f"[dim]pick[/] {pick_detail}")
+                _vstatus(verbose, "pick", f"α>{alpha_threshold}")
+                x, y, clicked_object_id = sample_click(
+                    out.alpha, out.object_id_map, alpha_threshold, rng
+                )
+                mask = object_mask(
+                    out.object_weights,
+                    clicked_object_id,
+                    mode=mask_mode,
+                    weight_threshold=mask_weight_threshold,
+                )
+                mask_pixels = count_mask_pixels(mask, mode=mask_mode)
+                pick_detail = (
+                    f"oid={clicked_object_id} @ ({x},{y}) · mask={mask_pixels:,}px · {mask_mode}"
+                )
+                _vstatus(verbose, "pick", pick_detail)
+                _vlog(verbose, f"[dim]pick[/] {pick_detail}")
 
-            if not click_inside_mask(mask, x, y, mode=mask_mode):
-                raise ValueError("Click pixel not inside object mask")
+                if not click_inside_mask(mask, x, y, mode=mask_mode):
+                    raise ValueError("Click pixel not inside object mask")
 
-            record = SampleRecord(
-                id=sample_id,
-                image="",
-                mask="",
-                point=[x, y],
-                object_id=clicked_object_id,
-                num_objects=scene.num_objects,
-                background=bg_meta,
-                camera={
-                    "width": width,
-                    "height": height,
-                    "fov_deg": fov_deg,
-                    "viewmat": viewmat.detach().cpu().tolist(),
-                    "K": k.detach().cpu().tolist(),
-                },
-                objects=objects_meta,
-            )
-            _vstatus(verbose, "export", sample_id)
-            export_sample(output_dir, sample_id, rgb, mask, record)
-            _vstatus(verbose, "done", sample_id)
-            _vlog(
-                verbose,
-                f"[dim]export[/] {record.image} · {record.mask} · oid={clicked_object_id}",
-            )
-            return record
-        except (RuntimeError, ValueError) as exc:
-            last_error = exc
-            _vstatus(verbose, "retry", str(exc)[:48])
-            _vlog(verbose, f"[yellow]retry[/] {exc}")
-            continue
+                record = SampleRecord(
+                    id=sample_id,
+                    image="",
+                    mask="",
+                    point=[x, y],
+                    object_id=clicked_object_id,
+                    num_objects=scene.num_objects,
+                    background=bg_meta,
+                    camera={
+                        "width": width,
+                        "height": height,
+                        "fov_deg": fov_deg,
+                        "viewmat": viewmat.detach().cpu().tolist(),
+                        "K": k.detach().cpu().tolist(),
+                    },
+                    objects=objects_meta,
+                )
+                _vstatus(verbose, "export", sample_id)
+                export_sample(output_dir, sample_id, rgb, mask, record)
+                _vstatus(verbose, "done", sample_id)
+                _vlog(
+                    verbose,
+                    f"[dim]export[/] {record.image} · {record.mask} · oid={clicked_object_id}",
+                )
+                return record
+            except (RuntimeError, ValueError) as exc:
+                last_error = exc
+                _vstatus(verbose, "retry", str(exc)[:48])
+                _vlog(verbose, f"[yellow]retry[/] {exc}")
+                continue
 
-    raise RuntimeError(f"Failed to generate sample after retries: {last_error}")
+        raise RuntimeError(f"Failed to generate sample after retries: {last_error}")
+    finally:
+        scene.release_cache_refs()
