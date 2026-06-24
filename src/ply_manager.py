@@ -4,24 +4,41 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 
 import numpy as np
 import torch.multiprocessing as mp
 
+from memutil import self_rss_kb
 from ply_loader import (
     PlyLoadStats,
     SceneGaussians,
     load_ply_full,
     share_gaussians,
-    subsample_gaussians,
 )
 
 ACQUIRE = "acquire"
 RELEASE = "release"
 STOP = "stop"
+SNAPSHOT = "snapshot"
+
+
+@dataclass
+class CacheEntryView:
+    name: str
+    size_mb: float
+    ref_count: int
+    status: str
+    evict_in_sec: float | None
+
+
+@dataclass
+class CacheSnapshot:
+    entries: list[CacheEntryView] = field(default_factory=list)
+    cache_rss_mb: float = 0.0
+    loading: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -29,8 +46,25 @@ class _CacheEntry:
     gaussians: SceneGaussians
     stats: PlyLoadStats
     total_gaussians: int
+    local_lo: np.ndarray
+    local_hi: np.ndarray
     ref_count: int = 0
     last_used: float = 0.0
+
+
+def _entry_size_mb(entry: _CacheEntry) -> float:
+    total = 0
+    for tensor in (
+        entry.gaussians.means,
+        entry.gaussians.quats,
+        entry.gaussians.scales,
+        entry.gaussians.opacities,
+        entry.gaussians.sh_dc,
+        entry.gaussians.sh_rest,
+        entry.gaussians.object_ids,
+    ):
+        total += tensor.untyped_storage().nbytes()
+    return total / (1024 * 1024)
 
 
 class PlyManagerClient:
@@ -42,25 +76,18 @@ class PlyManagerClient:
         self._worker_id = worker_id
         self._next_req_id = 0
 
-    def acquire(
-        self,
-        path: str | Path,
-        max_gaussians: int | None = None,
-        subsample_seed: int | None = None,
-    ) -> tuple[SceneGaussians, PlyLoadStats, int]:
+    def acquire(self, path: str | Path) -> tuple[SceneGaussians, PlyLoadStats, int, np.ndarray, np.ndarray]:
         path_key = str(Path(path).resolve())
         req_id = self._next_req_id
         self._next_req_id += 1
-        self._request_queue.put(
-            (ACQUIRE, self._worker_id, req_id, path_key, max_gaussians, subsample_seed)
-        )
+        self._request_queue.put((ACQUIRE, self._worker_id, req_id, path_key))
         kind, resp_req_id, payload = self._response_queue.get()
         if kind != ACQUIRE or resp_req_id != req_id:
             raise RuntimeError(f"Unexpected PLY manager response: {kind!r} {resp_req_id!r}")
         if payload is None:
             raise RuntimeError(f"PLY manager failed to load {path_key}")
-        gaussians, stats, total_gaussians = payload
-        return gaussians, stats, total_gaussians
+        gaussians, stats, total_gaussians, local_lo, local_hi = payload
+        return gaussians, stats, total_gaussians, local_lo, local_hi
 
     def release(self, path: str | Path) -> None:
         path_key = str(Path(path).resolve())
@@ -83,14 +110,10 @@ def is_active() -> bool:
     return _client is not None
 
 
-def acquire(
-    path: str | Path,
-    max_gaussians: int | None = None,
-    subsample_seed: int | None = None,
-) -> tuple[SceneGaussians, PlyLoadStats, int]:
+def acquire(path: str | Path) -> tuple[SceneGaussians, PlyLoadStats, int, np.ndarray, np.ndarray]:
     if _client is None:
         raise RuntimeError("PLY manager client is not bound")
-    return _client.acquire(path, max_gaussians, subsample_seed)
+    return _client.acquire(path)
 
 
 def release(path: str | Path) -> None:
@@ -129,17 +152,69 @@ def _log_event(
     log_file.flush()
 
 
+def _ui_cache_log(ui_queue: Any | None, message: str) -> None:
+    if ui_queue is not None:
+        ui_queue.put(("cache_log", message))
+
+
+def _build_snapshot(
+    cache: dict[str, _CacheEntry],
+    loading: set[str],
+    cache_ttl_sec: float,
+    now: float,
+) -> CacheSnapshot:
+    entries: list[CacheEntryView] = []
+    for key in sorted(loading):
+        entries.append(
+            CacheEntryView(
+                name=Path(key).name,
+                size_mb=0.0,
+                ref_count=0,
+                status="loading",
+                evict_in_sec=None,
+            )
+        )
+    for key, entry in sorted(cache.items(), key=lambda kv: kv[0]):
+        if key in loading:
+            continue
+        idle = now - entry.last_used if entry.ref_count == 0 else 0.0
+        if entry.ref_count > 0:
+            status = "loaded"
+            evict_in: float | None = None
+        else:
+            status = "wait TTL"
+            evict_in = max(0.0, cache_ttl_sec - idle)
+        entries.append(
+            CacheEntryView(
+                name=Path(key).name,
+                size_mb=_entry_size_mb(entry),
+                ref_count=entry.ref_count,
+                status=status,
+                evict_in_sec=evict_in,
+            )
+        )
+    return CacheSnapshot(
+        entries=entries,
+        cache_rss_mb=self_rss_kb() / 1024,
+        loading=[Path(k).name for k in sorted(loading)],
+    )
+
+
 def _manager_loop(
     request_queue: Any,
     response_queues: list[Any],
+    snapshot_queue: Any,
+    ui_queue: Any | None,
     cache_ttl_sec: float,
     eviction_interval_sec: float,
     stats_path: str | None,
+    verbose: bool,
 ) -> None:
     import sys
 
     sys.argv[0] = "ply-manager"
     cache: dict[str, _CacheEntry] = {}
+    loading: set[str] = set()
     lock = threading.Lock()
     stop_event = threading.Event()
     log_file: TextIO | None = None
@@ -151,6 +226,10 @@ def _manager_loop(
             f"# ply cache ttl={cache_ttl_sec}s eviction_interval={eviction_interval_sec}s\n"
         )
         log_file.flush()
+
+    def debug(msg: str) -> None:
+        if verbose:
+            _ui_cache_log(ui_queue, msg)
 
     def evict_idle() -> None:
         while not stop_event.wait(eviction_interval_sec):
@@ -172,6 +251,10 @@ def _manager_loop(
                         len(cache),
                         idle_sec=idle,
                     )
+                    debug(
+                        f"[red]cache[/] evict {Path(key).name} "
+                        f"idle={idle:.1f}s refs={entry.ref_count}"
+                    )
 
     eviction_thread = threading.Thread(target=evict_idle, daemon=True)
     eviction_thread.start()
@@ -188,6 +271,13 @@ def _manager_loop(
                 log_file.close()
             break
 
+        if kind == SNAPSHOT:
+            _, req_id = msg
+            with lock:
+                snap = _build_snapshot(cache, loading, cache_ttl_sec, time.monotonic())
+            snapshot_queue.put((SNAPSHOT, req_id, snap))
+            continue
+
         if kind == RELEASE:
             _, path_key = msg
             now = time.monotonic()
@@ -203,6 +293,10 @@ def _manager_loop(
                         entry.ref_count,
                         len(cache),
                     )
+                    debug(
+                        f"[red]cache[/] release {Path(path_key).name} "
+                        f"ref={entry.ref_count}"
+                    )
                     if cache_ttl_sec <= 0 and entry.ref_count == 0:
                         del cache[path_key]
                         _log_event(
@@ -212,21 +306,36 @@ def _manager_loop(
                             0,
                             len(cache),
                         )
+                        debug(f"[red]cache[/] evict_immediate {Path(path_key).name}")
             continue
 
         if kind == ACQUIRE:
-            _, worker_id, req_id, path_key, max_gaussians, subsample_seed = msg
+            _, worker_id, req_id, path_key = msg
             resp_q = response_queues[worker_id]
             try:
                 with lock:
                     entry = cache.get(path_key)
                     if entry is None:
-                        gaussians, stats, total = load_ply_full(path_key)
+                        loading.add(path_key)
+                        debug(
+                            f"[red]cache[/] loading {Path(path_key).name} "
+                            f"worker=#{worker_id}"
+                        )
+                        lock.release()
+                        try:
+                            gaussians, stats, total = load_ply_full(path_key)
+                        finally:
+                            lock.acquire()
+                            loading.discard(path_key)
                         share_gaussians(gaussians)
+                        lo = gaussians.means.min(dim=0).values.cpu().numpy()
+                        hi = gaussians.means.max(dim=0).values.cpu().numpy()
                         entry = _CacheEntry(
                             gaussians=gaussians,
                             stats=stats,
                             total_gaussians=total,
+                            local_lo=lo,
+                            local_hi=hi,
                         )
                         cache[path_key] = entry
                         cached = "miss"
@@ -243,16 +352,22 @@ def _manager_loop(
                         worker_id=worker_id,
                         cached=cached,
                     )
-
-                    if max_gaussians is not None:
-                        rng = np.random.default_rng(subsample_seed)
-                        out = subsample_gaussians(entry.gaussians, max_gaussians, rng)
-                        payload = (out, entry.stats, entry.total_gaussians)
-                    else:
-                        payload = (entry.gaussians, entry.stats, entry.total_gaussians)
+                    debug(
+                        f"[red]cache[/] acquire {Path(path_key).name} "
+                        f"ref={entry.ref_count} {cached} worker=#{worker_id}"
+                    )
+                    payload = (
+                        entry.gaussians,
+                        entry.stats,
+                        entry.total_gaussians,
+                        entry.local_lo,
+                        entry.local_hi,
+                    )
 
                 resp_q.put((ACQUIRE, req_id, payload))
             except Exception:
+                with lock:
+                    loading.discard(path_key)
                 resp_q.put((ACQUIRE, req_id, None))
             continue
 
@@ -266,14 +381,20 @@ class PlyManagerServer:
         cache_ttl_sec: float = 30.0,
         eviction_interval_sec: float = 5.0,
         stats_path: Path | None = None,
+        ui_queue: Any | None = None,
+        verbose: bool = False,
     ) -> None:
         self._workers = workers
         self._cache_ttl_sec = cache_ttl_sec
         self._eviction_interval_sec = eviction_interval_sec
         self._stats_path = str(stats_path) if stats_path is not None else None
+        self._ui_queue = ui_queue
+        self._verbose = verbose
         self.request_queue: Any = mp.Queue()
         self.response_queues: list[Any] = [mp.Queue() for _ in range(workers)]
+        self.snapshot_queue: Any = mp.Queue()
         self._process: Any = None
+        self._snapshot_id = 0
 
     def start(self) -> None:
         if self._process is not None:
@@ -283,9 +404,12 @@ class PlyManagerServer:
             args=(
                 self.request_queue,
                 self.response_queues,
+                self.snapshot_queue,
+                self._ui_queue,
                 self._cache_ttl_sec,
                 self._eviction_interval_sec,
                 self._stats_path,
+                self._verbose,
             ),
             daemon=True,
         )
@@ -297,6 +421,20 @@ class PlyManagerServer:
             self.response_queues[worker_id],
             worker_id,
         )
+
+    def fetch_snapshot(self) -> CacheSnapshot | None:
+        if self._process is None or not self._process.is_alive():
+            return None
+        req_id = self._snapshot_id
+        self._snapshot_id += 1
+        self.request_queue.put((SNAPSHOT, req_id))
+        try:
+            while True:
+                kind, resp_id, snap = self.snapshot_queue.get(timeout=0.05)
+                if kind == SNAPSHOT and resp_id == req_id:
+                    return snap
+        except Exception:
+            return None
 
     def stop(self) -> None:
         if self._process is None:

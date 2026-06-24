@@ -15,6 +15,8 @@ from typing import Any, Literal, TextIO
 import click
 
 from background import background_from_config, list_background_images
+from memutil import self_rss_kb
+from ply_manager import CacheSnapshot
 
 from rich import box
 from rich.console import Console
@@ -35,6 +37,7 @@ from rich.text import Text
 console = Console()
 
 RECENT_LINES = 15
+CACHE_LOG_LINES = 8
 BRAILLE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _RICH_TAG = re.compile(r"\[[^\]]*\]")
 
@@ -62,6 +65,7 @@ class WorkerState:
     raster_started_at: float | None = None
     phase: str = "—"
     detail: str = "—"
+    memory_mb: float | None = None
 
 
 @dataclass
@@ -70,11 +74,15 @@ class ProgressTracker:
     workers: int
     verbose: bool = False
     log_path: Path | None = None
+    cache_enabled: bool = True
     worker_states: dict[int, WorkerState] = field(default_factory=dict)
     completed: int = 0
     failed: int = 0
     start_time: float = field(default_factory=time.perf_counter)
     recent: deque[str] = field(default_factory=lambda: deque(maxlen=RECENT_LINES))
+    cache_log: deque[str] = field(default_factory=lambda: deque(maxlen=CACHE_LOG_LINES))
+    cache_snapshot: CacheSnapshot | None = None
+    main_rss_mb: float = 0.0
     _progress: Progress = field(init=False, repr=False)
     _task_id: int = field(init=False, repr=False)
     _log_file: TextIO | None = field(init=False, repr=False, default=None)
@@ -112,9 +120,14 @@ class ProgressTracker:
             self._log_file = None
 
     def _record(self, worker_id: int, rich_body: str) -> None:
-        self.recent.append(_worker_prefix_rich(worker_id) + rich_body)
-        if self._log_file is not None:
-            plain = _worker_prefix_plain(worker_id) + _strip_rich_markup(rich_body)
+        if worker_id >= 0:
+            self.recent.append(_worker_prefix_rich(worker_id) + rich_body)
+            if self._log_file is not None:
+                plain = _worker_prefix_plain(worker_id) + _strip_rich_markup(rich_body)
+                self._log_file.write(plain + "\n")
+                self._log_file.flush()
+        elif self._log_file is not None:
+            plain = _strip_rich_markup(rich_body)
             self._log_file.write(plain + "\n")
             self._log_file.flush()
 
@@ -129,6 +142,22 @@ class ProgressTracker:
         st.raster_started_at = None
         st.phase = "starting"
         st.detail = "—"
+        st.memory_mb = None
+
+    def on_memory(self, worker_id: int, rss_kb: int) -> None:
+        st = self.worker_states[worker_id]
+        st.memory_mb = rss_kb / 1024
+
+    def update_cache(self, snapshot: CacheSnapshot) -> None:
+        self.cache_snapshot = snapshot
+
+    def on_cache_log(self, message: str) -> None:
+        self.cache_log.append(message)
+        if self.verbose:
+            self.recent.append(message)
+            if self._log_file is not None:
+                self._log_file.write(_strip_rich_markup(message) + "\n")
+                self._log_file.flush()
 
     def on_gaussians(self, worker_id: int, count: int) -> None:
         st = self.worker_states[worker_id]
@@ -178,6 +207,7 @@ class ProgressTracker:
             if st.status == "working" and st.started_at is not None:
                 st.elapsed = now - st.started_at
                 active += 1
+        self.main_rss_mb = self_rss_kb() / 1024
         self._progress.update(
             self._task_id,
             completed=self.completed,
@@ -237,6 +267,89 @@ def _format_recent_panel(tracker: ProgressTracker) -> Text:
     return Text.from_markup("\n".join(padded))
 
 
+def _format_mib(mb: float | None) -> Text:
+    if mb is None:
+        return Text("—", style="red")
+    return Text(f"{mb:.0f}", style="red")
+
+
+def _worker_memory_totals(tracker: ProgressTracker) -> tuple[float, float, float]:
+    worker_total = sum(st.memory_mb or 0.0 for st in tracker.worker_states.values())
+    cache_total = tracker.cache_snapshot.cache_rss_mb if tracker.cache_snapshot else 0.0
+    total = tracker.main_rss_mb + worker_total + cache_total
+    return total, worker_total, cache_total
+
+
+def _build_cache_panel(tracker: ProgressTracker) -> Panel:
+    total, worker_total, cache_total = _worker_memory_totals(tracker)
+    summary = Table.grid(padding=(0, 1))
+    summary.add_column()
+    summary.add_column(justify="right")
+    summary.add_row(Text("Total memory", style="red bold"), Text(f"{total:.0f} MiB", style="red bold"))
+    summary.add_row(Text("Worker memory", style="red"), Text(f"{worker_total:.0f} MiB", style="red"))
+    summary.add_row(Text("Cache memory", style="red"), Text(f"{cache_total:.0f} MiB", style="red"))
+
+    splat_table = Table(
+        box=box.SIMPLE_HEAD,
+        expand=True,
+        show_edge=False,
+        pad_edge=False,
+    )
+    splat_table.add_column("Splat", min_width=10)
+    splat_table.add_column("Size", justify="right", width=7)
+    splat_table.add_column("Refs", justify="right", width=5)
+    splat_table.add_column("Status", width=9)
+    splat_table.add_column("Evict", justify="right", width=7)
+
+    snap = tracker.cache_snapshot
+    if not tracker.cache_enabled:
+        splat_table.add_row("—", "—", "—", Text("off", style="red dim"), "—")
+    elif snap is None or not snap.entries:
+        splat_table.add_row("—", "—", "—", Text("empty", style="red dim"), "—")
+    else:
+        for entry in snap.entries:
+            evict = "—"
+            if entry.evict_in_sec is not None:
+                evict = f"{entry.evict_in_sec:.0f}s"
+            size = f"{entry.size_mb:.0f}M" if entry.size_mb > 0 else "—"
+            splat_table.add_row(
+                entry.name,
+                Text(size, style="red"),
+                Text(str(entry.ref_count), style="red"),
+                Text(entry.status, style="red"),
+                Text(evict, style="red"),
+            )
+
+    body = Table.grid(expand=True)
+    body.add_row(summary)
+    body.add_row(splat_table)
+
+    return Panel(
+        body,
+        title="[red bold]Memory / Cache[/]",
+        border_style="red",
+        padding=(0, 1),
+        height=RECENT_LINES + 2,
+    )
+
+
+def _build_bottom_split(tracker: ProgressTracker) -> Panel:
+    split = Table.grid(expand=True)
+    split.add_column(ratio=6)
+    split.add_column(ratio=4)
+    split.add_row(
+        Panel(
+            _format_recent_panel(tracker),
+            title="Recent",
+            border_style="dim",
+            padding=(0, 1),
+            height=RECENT_LINES + 2,
+        ),
+        _build_cache_panel(tracker),
+    )
+    return Panel(split, box=box.SIMPLE, border_style="dim", padding=0)
+
+
 def build_live_render(tracker: ProgressTracker) -> Table:
     root = Table.grid(expand=True)
     root.add_column(ratio=1)
@@ -249,6 +362,7 @@ def build_live_render(tracker: ProgressTracker) -> Table:
     worker_table.add_column("Sample", width=10)
     worker_table.add_column("Render", justify="right", width=7)
     worker_table.add_column("Gauss/s", justify="right", width=9)
+    worker_table.add_column("MiB", justify="right", width=6)
     if tracker.verbose:
         worker_table.add_column("Phase", width=10)
         worker_table.add_column("Detail", min_width=24, no_wrap=False)
@@ -263,12 +377,14 @@ def build_live_render(tracker: ProgressTracker) -> Table:
         else:
             render = "—"
         gauss_rate = _worker_gaussians_per_sec(st, now)
+        mem = _format_mib(st.memory_mb)
         row: list[Any] = [
             _worker_label(wid, st.status),
             Text(st.status, style=_status_style(st.status)),
             st.sample_id,
             render,
             gauss_rate,
+            mem,
         ]
         if tracker.verbose:
             row.extend([st.phase, st.detail])
@@ -277,15 +393,7 @@ def build_live_render(tracker: ProgressTracker) -> Table:
 
     root.add_row(Panel(tracker._progress, border_style="cyan", padding=(0, 1)))
     root.add_row(worker_table)
-    root.add_row(
-        Panel(
-            _format_recent_panel(tracker),
-            title="Recent",
-            border_style="dim",
-            padding=(0, 1),
-            height=RECENT_LINES + 2,
-        )
-    )
+    root.add_row(_build_bottom_split(tracker))
 
     return root
 

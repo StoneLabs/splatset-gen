@@ -17,6 +17,7 @@ import yaml
 import event_log
 from console import ProgressTracker, build_live_render, print_summary
 from export import save_config_snapshot
+from memutil import self_rss_kb
 from ply_manager import PlyManagerServer, bind as bind_ply_manager, clear as clear_ply_manager
 from rich.live import Live
 from sample import generate_one_sample
@@ -65,6 +66,7 @@ def _worker(
 
     sample_id = f"{sample_index:06d}"
     _emit("start", worker_id, sample_id)
+    _emit("memory", worker_id, self_rss_kb())
 
     t0 = time.perf_counter()
     try:
@@ -79,16 +81,18 @@ def _worker(
             project_root=project_root,
         )
         elapsed = time.perf_counter() - t0
+        _emit("memory", worker_id, self_rss_kb())
         _emit("done", worker_id, sample_id, elapsed, None)
     except Exception as exc:
         elapsed = time.perf_counter() - t0
+        _emit("memory", worker_id, self_rss_kb())
         _emit("done", worker_id, sample_id, elapsed, str(exc))
         raise
 
     return sample_id
 
 
-def _drain_queue(queue: Any, tracker: ProgressTracker) -> None:
+def _drain_queue(queue: Any, tracker: ProgressTracker, ply_server: PlyManagerServer | None) -> None:
     while True:
         try:
             msg = queue.get_nowait()
@@ -113,12 +117,24 @@ def _drain_queue(queue: Any, tracker: ProgressTracker) -> None:
         elif kind == "status":
             _, worker_id, phase, detail = msg
             tracker.on_status(worker_id, phase, detail)
+        elif kind == "memory":
+            _, worker_id, rss_kb = msg
+            tracker.on_memory(worker_id, rss_kb)
+        elif kind == "cache_log":
+            _, message = msg
+            tracker.on_cache_log(message)
+
+    if ply_server is not None:
+        snap = ply_server.fetch_snapshot()
+        if snap is not None:
+            tracker.update_cache(snap)
 
 
 def _run_with_live(
     tracker: ProgressTracker,
     progress_queue: Any,
     run_fn: Any,
+    ply_server: PlyManagerServer | None = None,
 ) -> list[str]:
     """Run ``run_fn`` while a background thread pumps progress events to the UI."""
     with Live(build_live_render(tracker), refresh_per_second=10, transient=False) as live:
@@ -126,7 +142,7 @@ def _run_with_live(
 
         def pump() -> None:
             while not stop.is_set():
-                _drain_queue(progress_queue, tracker)
+                _drain_queue(progress_queue, tracker, ply_server)
                 tracker.tick()
                 live.update(build_live_render(tracker))
                 stop.wait(0.08)
@@ -138,7 +154,7 @@ def _run_with_live(
         finally:
             stop.set()
             pump_thread.join(timeout=2.0)
-            _drain_queue(progress_queue, tracker)
+            _drain_queue(progress_queue, tracker, ply_server)
             tracker.tick()
             live.update(build_live_render(tracker))
 
@@ -175,23 +191,33 @@ def generate_dataset_parallel(
         for i in range(num_samples)
     ]
 
+    gen_cfg = config.get("generation", {})
+    use_shared_cache = gen_cfg.get("ply_shared_cache", True)
+    cache_ttl = float(gen_cfg.get("ply_cache_ttl_sec", 30.0))
+
     tracker = ProgressTracker(
         num_samples=num_samples,
         workers=workers,
         verbose=verbose,
         log_path=output_dir / "generator.log",
+        cache_enabled=use_shared_cache,
     )
     t0 = time.perf_counter()
 
-    gen_cfg = config.get("generation", {})
-    use_shared_cache = gen_cfg.get("ply_shared_cache", True)
-    cache_ttl = float(gen_cfg.get("ply_cache_ttl_sec", 30.0))
+    progress_queue = None
+    mp_manager = None
+    if show_progress:
+        mp_manager = Manager()
+        progress_queue = mp_manager.Queue()
+
     ply_server: PlyManagerServer | None = None
     if use_shared_cache:
         ply_server = PlyManagerServer(
             workers=workers,
             cache_ttl_sec=cache_ttl,
             stats_path=output_dir / "ply_cache.log",
+            ui_queue=progress_queue,
+            verbose=verbose and show_progress,
         )
         ply_server.start()
 
@@ -217,10 +243,8 @@ def generate_dataset_parallel(
             if ply_server is not None:
                 ply_server.stop()
 
-    manager = Manager()
-    progress_queue = manager.Queue()
-    slot_counter = manager.Value("i", 0)
-    slot_lock = manager.Lock()
+    slot_counter = mp_manager.Value("i", 0)
+    slot_lock = mp_manager.Lock()
 
     def run_sequential() -> list[str]:
         global _PROGRESS_QUEUE, _WORKER_SLOT
@@ -247,12 +271,15 @@ def generate_dataset_parallel(
 
     try:
         if workers <= 1:
-            results = _run_with_live(tracker, progress_queue, run_sequential)
+            results = _run_with_live(tracker, progress_queue, run_sequential, ply_server)
         else:
-            results = _run_with_live(tracker, progress_queue, run_pool)
+            results = _run_with_live(tracker, progress_queue, run_pool, ply_server)
     finally:
         clear_ply_manager()
         if ply_server is not None:
+            snap = ply_server.fetch_snapshot()
+            if snap is not None:
+                tracker.update_cache(snap)
             ply_server.stop()
         tracker.close_log()
 
