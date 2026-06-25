@@ -15,7 +15,7 @@ background:
 scene:
   num_objects_min: 1
   num_objects_max: 1
-  position_range: [-10.0, 10.0]
+  position_range: [-15.0, 15.0]
   rotation_deg_max: 45
   scale_jitter: [0.25, 16]
 
@@ -26,7 +26,7 @@ camera:
 
 generation:
   max_camera_retries: 20
-  #max_gaussians_per_object: 25000
+  # max_gaussians_per_object: 200000
 
 augmentation:
   enabled: true
