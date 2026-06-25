@@ -24,6 +24,7 @@ class SampleRecord:
     background: dict[str, Any]
     camera: dict[str, Any]
     objects: list[dict[str, Any]]
+    augmentation: dict[str, Any] | None = None
 
 
 def save_config_snapshot(output_dir: Path, config: dict[str, Any]) -> None:

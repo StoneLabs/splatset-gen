@@ -88,3 +88,82 @@ generation:
   # Optional speed/testing cap: load at most N Gaussians per PLY (random subset, seeded).
   # Omit entirely for full-quality loads of every Gaussian in each file.
   # max_gaussians_per_object: 8000
+
+  augmentation:
+    # Post-render augmentations. Geometric effects (tear, warp, lines) stay aligned with mask.
+    enabled: true
+  
+    lighting:
+      enabled: true
+      brightness_range: [-0.25, 0.25]
+      contrast_range: [0.75, 1.25]
+      gamma_range: [0.85, 1.15]
+      saturation_range: [0.6, 1.4]
+      warmth_range: [-0.2, 0.2]
+  
+    blur:
+      enabled: true
+      probability: 0.4
+      radius_range: [0.5, 2.5]
+      motion_probability: 0.5
+      motion_length_range: [3, 15]
+      motion_angle_range: [0, 180]
+  
+    tear:
+      enabled: true
+      probability: 0.4
+      num_bands_range: [2, 6]
+      shift_range: [-5, 5]
+      horizontal_probability: 0.5
+  
+    warp:
+      enabled: true
+      probability: 0.3
+      perspective:
+        enabled: true
+        corner_jitter_range: [0.02, 0.12]
+      barrel:
+        enabled: true
+        strength_range: [-0.2, -0.02]
+      pincushion:
+        enabled: true
+        strength_range: [0.02, 0.15]
+      affine:
+        enabled: true
+        rotate_deg_range: [-8, 8]
+        scale_range: [0.90, 1.10]
+        shear_range: [-0.08, 0.08]
+        translate_frac_range: [-0.04, 0.04]
+  
+    chromatic_aberration:
+      enabled: true
+      probability: 0.4
+      shift_range: [1, 4]
+      horizontal_probability: 0.5
+  
+    noise:
+      enabled: true
+      probability: 0.4
+      std_range: [0.01, 0.06]
+  
+    jpeg:
+      enabled: true
+      probability: 0.4
+      quality_range: [10, 85]
+  
+    vignette:
+      enabled: true
+      probability: 0.4
+      strength_range: [0.2, 0.6]
+      falloff_start_range: [0.25, 0.45]
+  
+    lines:
+      enabled: true
+      probability: 0.5
+      count_range: [1, 15]
+      angle_deg_range: [0, 180]
+      thickness_range: [1, 6]
+      color_range: [0.00, 1.0]
+      color_per_channel: true
+      max_attempts_per_line: 32
+  

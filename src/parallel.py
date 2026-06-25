@@ -152,6 +152,7 @@ def generate_dataset_parallel(
 
     config = dict(config)
     config["_workers"] = workers
+    config["_seed"] = seed
     if project_root is not None:
         config["_project_root"] = str(project_root.resolve())
     ply_paths_str = [str(p) for p in ply_paths]
