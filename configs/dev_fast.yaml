@@ -2,7 +2,7 @@ render:
   width: 256
   height: 256
   alpha_threshold: 0.5
-  sh_degree: 0
+  sh_degree: 3
   mask_mode: soft
   mask_weight_threshold: 0.05
 
