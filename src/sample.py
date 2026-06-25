@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 import event_log
+from augment import apply_augmentation, apply_random_lines, make_augmentation_rng
 from background import background_from_config, composite
 from camera import sample_random_camera
 from export import SampleRecord, export_sample
@@ -146,6 +147,40 @@ def generate_one_sample(
             if not click_inside_mask(mask, x, y, mode=mask_mode):
                 raise ValueError("Click pixel not inside object mask")
 
+            aug_cfg = config.get("augmentation", {})
+            if aug_cfg.get("enabled", False):
+                _vstatus(verbose, "augment", "lighting + postprocess")
+            aug_rng = make_augmentation_rng(int(config.get("_seed", 0)), sample_id)
+            rgb, aug_meta, mask = apply_augmentation(
+                rgb, config, aug_rng, mask=mask, mask_mode=mask_mode
+            )
+            if aug_meta:
+                order = aug_meta.get("order", [])
+                aug_detail = " → ".join(order) if order else "applied"
+                _vstatus(verbose, "augment", aug_detail)
+                _vlog(verbose, f"[dim]augment[/] order={order} · {aug_meta}")
+
+            if not click_inside_mask(mask, x, y, mode=mask_mode):
+                raise ValueError("Click pixel not inside object mask after augmentation")
+
+            rgb, mask, lines_meta = apply_random_lines(
+                rgb,
+                mask,
+                x,
+                y,
+                config,
+                aug_rng,
+            )
+            if lines_meta:
+                aug_meta = aug_meta or {"enabled": True, "order": []}
+                aug_meta["lines"] = lines_meta
+                aug_meta["order"].append("lines")
+                _vstatus(verbose, "lines", f"{lines_meta['count']} drawn · order +lines")
+                _vlog(verbose, f"[dim]lines[/] {lines_meta}")
+
+            if not click_inside_mask(mask, x, y, mode=mask_mode):
+                raise ValueError("Click pixel not inside object mask after line overlay")
+
             record = SampleRecord(
                 id=sample_id,
                 image="",
@@ -162,6 +197,7 @@ def generate_one_sample(
                     "K": k.detach().cpu().tolist(),
                 },
                 objects=objects_meta,
+                augmentation=aug_meta or None,
             )
             _vstatus(verbose, "export", sample_id)
             export_sample(output_dir, sample_id, rgb, mask, record)

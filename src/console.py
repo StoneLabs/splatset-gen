@@ -323,6 +323,26 @@ def _background_plan_lines(cfg: dict[str, Any], project_root: Path | None) -> li
     return lines
 
 
+def _augmentation_plan_lines(cfg: dict[str, Any]) -> list[str]:
+    """Augmentation section lines for the pre-run plan panel."""
+    aug = cfg.get("augmentation", {})
+    if not aug.get("enabled", False):
+        return ["", "[bold underline]Augmentation[/]", "  Enabled          [dim]off[/]"]
+
+    lines = ["", "[bold underline]Augmentation[/]", "  Enabled          [green]on[/]"]
+    if aug.get("lighting", {}).get("enabled", False):
+        lines.append("  Lighting         [green]on[/]  [dim](always per sample)[/]")
+
+    for name in ("blur", "tear", "warp", "chromatic_aberration", "noise", "jpeg", "vignette", "lines"):
+        effect = aug.get(name, {})
+        if not effect.get("enabled", False):
+            continue
+        prob = effect.get("probability", 1.0)
+        lines.append(f"  {name.replace('_', ' ').title():16} p={prob}")
+
+    return lines
+
+
 def print_plan(
     *,
     ply_dir: Path,
@@ -397,6 +417,7 @@ def print_plan(
         ]
     )
     lines.extend(_background_plan_lines(cfg, project_root))
+    lines.extend(_augmentation_plan_lines(cfg))
     lines.extend(
         [
             "",
