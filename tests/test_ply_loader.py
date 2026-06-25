@@ -120,6 +120,48 @@ def test_draw_fraction_range_subsample(tmp_path: Path) -> None:
     assert stats.draw_fraction == pytest.approx(0.5)
 
 
+def test_f_rest_channel_major_layout(tmp_path: Path) -> None:
+    """Match Inria 3DGS PLY layout: f_rest_0..14=R, 15..29=G, 30..44=B."""
+    from plyfile import PlyData, PlyElement
+
+    n = 1
+    dtype = [
+        ("x", "f4"),
+        ("y", "f4"),
+        ("z", "f4"),
+        ("opacity", "f4"),
+        ("scale_0", "f4"),
+        ("scale_1", "f4"),
+        ("scale_2", "f4"),
+        ("rot_0", "f4"),
+        ("rot_1", "f4"),
+        ("rot_2", "f4"),
+        ("rot_3", "f4"),
+        ("f_dc_0", "f4"),
+        ("f_dc_1", "f4"),
+        ("f_dc_2", "f4"),
+    ] + [(f"f_rest_{i}", "f4") for i in range(45)]
+    row = np.zeros((), dtype=dtype)
+    row["x"], row["y"], row["z"] = 0.0, 0.0, 0.0
+    row["opacity"] = 0.0
+    row["scale_0"] = row["scale_1"] = row["scale_2"] = np.log(0.05)
+    row["rot_0"] = 1.0
+    row["f_dc_0"] = row["f_dc_1"] = row["f_dc_2"] = 0.0
+    row["f_rest_0"] = 1.25
+    row["f_rest_15"] = 2.5
+    row["f_rest_30"] = 3.75
+    rows = np.array([row] * n)
+    ply_path = tmp_path / "sh_layout.ply"
+    PlyData([PlyElement.describe(rows, "vertex")], text=False).write(str(ply_path))
+
+    scene, _stats = load_ply(ply_path)
+    sh = scene.sh_rest.numpy()[0]
+
+    assert sh.shape == (15, 3)
+    np.testing.assert_allclose(sh[0], [1.25, 2.5, 3.75], rtol=0, atol=1e-6)
+    assert np.count_nonzero(sh) == 3
+
+
 def test_draw_fraction_uses_full_ply_without_cap(tmp_path: Path) -> None:
     ply_path = write_synthetic_ply(tmp_path / "object.ply", num_gaussians=20)
     rng = np.random.default_rng(0)

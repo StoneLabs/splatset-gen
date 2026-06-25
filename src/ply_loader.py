@@ -199,7 +199,8 @@ def load_ply(
     sh_dc = _stack_field(vertex, "f_dc", 3).astype(np.float32)
 
     rest_names = sorted(
-        name for name in (vertex.dtype.names or ()) if name.startswith("f_rest_")
+        (name for name in (vertex.dtype.names or ()) if name.startswith("f_rest_")),
+        key=lambda name: int(name.split("_")[-1]),
     )
     if rest_names:
         rest_flat = np.stack([vertex[name] for name in rest_names], axis=-1).astype(
@@ -209,7 +210,13 @@ def load_ply(
             raise ValueError(
                 f"{path}: f_rest_* count {rest_flat.shape[1]} is not divisible by 3"
             )
-        sh_rest = rest_flat.reshape(rest_flat.shape[0], rest_flat.shape[1] // 3, 3)
+        # 3DGS PLY stores f_rest channel-major (R×K, G×K, B×K), not RGB triplets.
+        num_rest_per_channel = rest_flat.shape[1] // 3
+        sh_rest = np.ascontiguousarray(
+            rest_flat.reshape(rest_flat.shape[0], 3, num_rest_per_channel).transpose(
+                0, 2, 1
+            )
+        )
     else:
         sh_rest = np.zeros((means.shape[0], 0, 3), dtype=np.float32)
 
