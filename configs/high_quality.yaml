@@ -23,10 +23,11 @@ camera:
   fov_deg_range: [45, 69]
   distance_range: [4.0, 8.0]
   max_retries: 20
+  look_at_jitter: 5
 
 generation:
   max_camera_retries: 20
-  # max_gaussians_per_object: 200000
+  #max_gaussians_per_object: 25000
 
 augmentation:
   enabled: true
