@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 import event_log
@@ -18,6 +19,7 @@ from render.projection import (
 from render.sh import camera_position_from_viewmat, eval_sh_view
 
 BACKGROUND_ID = -1
+_TRANSMITTANCE_MIN = 1e-4
 
 
 @dataclass
@@ -61,22 +63,39 @@ def render(
     )
 
     num_objects = gaussians.num_objects
-    fg_rgb = torch.zeros(height, width, 3, device=device, dtype=dtype)
-    transmittance = torch.ones(height, width, device=device, dtype=dtype)
-    object_weights = torch.zeros(
-        height, width, max(num_objects, 1), device=device, dtype=dtype
-    )
     sort_idx = torch.argsort(depth)
-    win_size = torch.tensor([width, height], device=device, dtype=dtype)
-    n_sorted = sort_idx.numel()
+
+    depth_np = depth.numpy()
+    uv_np = uv.numpy()
+    areas_np = areas.numpy()
+    cinv_np = cinv2d.numpy()
+    opacities_np = gaussians.opacities.numpy()
+    colors_np = colors.numpy()
+    object_ids_np = gaussians.object_ids.numpy()
+    order = sort_idx.numpy()
+
+    wh = np.array([width, height], dtype=np.float32)
+    visible = (depth_np >= near) & (depth_np <= far)
+    uv_norm = np.abs(uv_np / wh)
+    visible &= (uv_norm[:, 0] <= 1.3) & (uv_norm[:, 1] <= 1.3)
+    x0_all = np.clip(uv_np[:, 0] - areas_np[:, 0], 0, width).astype(np.int32)
+    x1_all = np.clip(uv_np[:, 0] + areas_np[:, 0], 0, width).astype(np.int32)
+    y0_all = np.clip(uv_np[:, 1] - areas_np[:, 1], 0, height).astype(np.int32)
+    y1_all = np.clip(uv_np[:, 1] + areas_np[:, 1], 0, height).astype(np.int32)
+    visible &= (x1_all - x0_all) * (y1_all - y0_all) > 0
+    order = order[visible[order]]
+
+    fg_rgb_np = np.zeros((height, width, 3), dtype=np.float32)
+    transmittance_np = np.ones((height, width), dtype=np.float32)
+    object_weights_np = np.zeros(
+        (height, width, max(num_objects, 1)), dtype=np.float32
+    )
+
+    n_sorted = order.size
     report_every_ui = max(1, n_sorted // 20)
     report_every_log = max(1, n_sorted // 20)
 
-    yy = torch.arange(height, device=device, dtype=dtype)
-    xx = torch.arange(width, device=device, dtype=dtype)
-    grid_y, grid_x = torch.meshgrid(yy, xx, indexing="ij")
-
-    for j, idx in enumerate(sort_idx.tolist()):
+    for j, idx in enumerate(order):
         pct = 100.0 * (j + 1) / n_sorted
         if j % report_every_ui == 0 or j == n_sorted - 1:
             if event_log.is_active():
@@ -86,56 +105,53 @@ def render(
             if not event_log.is_active():
                 print(f"  rasterize {pct_label}", flush=True)
 
-        d = depth[idx].item()
-        if d < near or d > far:
+        x0 = int(x0_all[idx])
+        x1 = int(x1_all[idx])
+        y0 = int(y0_all[idx])
+        y1 = int(y1_all[idx])
+
+        t_patch = transmittance_np[y0:y1, x0:x1]
+        if t_patch.max() < _TRANSMITTANCE_MIN:
             continue
 
-        u = uv[idx]
-        if torch.any(torch.abs(u / win_size) > 1.3):
-            continue
+        u0 = uv_np[idx, 0]
+        u1 = uv_np[idx, 1]
+        c0, c1, c2 = cinv_np[idx]
+        opa = opacities_np[idx]
+        oid = int(object_ids_np[idx])
+        patch_color = colors_np[idx]
 
-        r = areas[idx]
-        x0 = int(max(min(u[0] - r[0], width), 0))
-        x1 = int(max(min(u[0] + r[0], width), 0))
-        y0 = int(max(min(u[1] - r[1], height), 0))
-        y1 = int(max(min(u[1] + r[1], height), 0))
-        if (x1 - x0) * (y1 - y0) == 0:
-            continue
+        xs = np.arange(x0, x1, dtype=np.float32) - u0
+        ys = np.arange(y0, y1, dtype=np.float32) - u1
+        px = xs[None, :]
+        py = ys[:, None]
+        maha = c0 * px * px + c2 * py * py + 2.0 * c1 * px * py
+        patch_alpha = np.exp(-0.5 * maha, dtype=np.float32) * opa
+        np.clip(patch_alpha, None, 0.99, out=patch_alpha)
 
-        cinv = cinv2d[idx]
-        opa = gaussians.opacities[idx].item()
-        patch_color = colors[idx]
-
-        px = grid_x[y0:y1, x0:x1] - u[0]
-        py = grid_y[y0:y1, x0:x1] - u[1]
-        maha = cinv[0] * px * px + cinv[2] * py * py + 2.0 * cinv[1] * px * py
-        patch_alpha = torch.exp(-0.5 * maha) * opa
-        patch_alpha = patch_alpha.clamp(max=0.99)
-
-        t_patch = transmittance[y0:y1, x0:x1]
         weight = patch_alpha * t_patch
-        oid = int(gaussians.object_ids[idx].item())
+        fg_rgb_np[y0:y1, x0:x1] += weight[..., None] * patch_color
+        object_weights_np[y0:y1, x0:x1, oid] += weight
+        transmittance_np[y0:y1, x0:x1] = t_patch * (1.0 - patch_alpha)
 
-        fg_rgb[y0:y1, x0:x1, :] += weight.unsqueeze(-1) * patch_color
-        ow_patch = object_weights[y0:y1, x0:x1, oid]
-        object_weights[y0:y1, x0:x1, oid] = ow_patch + weight
-        transmittance[y0:y1, x0:x1] = t_patch * (1.0 - patch_alpha)
-
-    alpha = (1.0 - transmittance).clamp(0.0, 1.0)
+    alpha_np = np.clip(1.0 - transmittance_np, 0.0, 1.0)
     if num_objects == 0:
-        object_id_map = torch.full(
-            (height, width), BACKGROUND_ID, device=device, dtype=torch.int32
-        )
-        object_weights = object_weights[:, :, :0]
+        object_id_map_np = np.full((height, width), BACKGROUND_ID, dtype=np.int32)
+        object_weights_np = object_weights_np[:, :, :0]
     else:
-        object_weights = object_weights[:, :, :num_objects]
-        total_object_weight = object_weights.sum(dim=-1)
-        object_id_map = object_weights.argmax(dim=-1).to(torch.int32)
-        object_id_map = torch.where(
+        object_weights_np = object_weights_np[:, :, :num_objects]
+        total_object_weight = object_weights_np.sum(axis=-1)
+        object_id_map_np = object_weights_np.argmax(axis=-1).astype(np.int32)
+        object_id_map_np = np.where(
             total_object_weight > 1e-6,
-            object_id_map,
-            torch.full_like(object_id_map, BACKGROUND_ID),
+            object_id_map_np,
+            BACKGROUND_ID,
         )
+
+    fg_rgb = torch.from_numpy(fg_rgb_np)
+    alpha = torch.from_numpy(alpha_np)
+    object_id_map = torch.from_numpy(object_id_map_np)
+    object_weights = torch.from_numpy(object_weights_np)
     return RenderOutput(
         fg_rgb=fg_rgb,
         alpha=alpha,
