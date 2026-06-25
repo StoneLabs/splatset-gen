@@ -1,0 +1,42 @@
+render:
+  width: 512
+  height: 512
+  alpha_threshold: 0.5
+  sh_degree: 3
+  mask_mode: soft
+  mask_weight_threshold: 0.05
+
+background:
+  mode: "image"
+  image_dir: "assets/backgrounds/"
+  resize_mode: "crop"
+  solid_color: [0.1, 0.1, 0.1]
+
+scene:
+  num_objects_min: 1
+  num_objects_max: 1
+  position_range: [-10.0, 10.0]
+  rotation_deg_max: 45
+  scale_jitter: [0.25, 16]
+
+camera:
+  fov_deg_range: [45, 69]
+  distance_range: [4.0, 8.0]
+  max_retries: 20
+
+generation:
+  max_camera_retries: 20
+  #max_gaussians_per_object: 25000
+
+augmentation:
+  enabled: true
+
+  lines:
+    enabled: true
+    probability: 0.5
+    count_range: [1, 15]
+    angle_deg_range: [0, 180]
+    thickness_range: [1, 16]
+    color_range: [0.00, 1.0]
+    color_per_channel: true
+    max_attempts_per_line: 32

@@ -15,9 +15,8 @@ render:
   # Must be in (0, 1). Higher → stricter “visible object” threshold.
   alpha_threshold: 0.5
 
-  # Spherical-harmonics color degree. v1 supports 0 only (DC / flat RGB per Gaussian).
-  # Higher values require f_rest_* in PLY and are not implemented yet.
-  sh_degree: 0
+  # Spherical-harmonics color degree (0–3). 0 = DC only; higher needs f_rest_* in PLY.
+  sh_degree: 3
 
   # Object mask output (masks/{id}.png, grayscale L):
   #   binary — 0 or 255; crisp labels for standard click-to-segment training

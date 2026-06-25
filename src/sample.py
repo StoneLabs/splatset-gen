@@ -28,7 +28,7 @@ from camera import sample_random_camera
 from export import SampleRecord, export_sample
 from picker import click_inside_mask, count_mask_pixels, object_mask, sample_click
 from render import render
-from render.sh import camera_position_from_viewmat
+from render.sh import camera_position_from_viewmat, validate_sh_degree
 from scene import build_random_scene
 
 
@@ -55,6 +55,7 @@ def generate_one_sample(
     event_log.set_sample(sample_id)
     render_cfg = config.get("render", {})
     sh_degree = int(render_cfg.get("sh_degree", 0))
+    validate_sh_degree(sh_degree)
     alpha_threshold = float(render_cfg.get("alpha_threshold", 0.5))
     mask_mode = str(render_cfg.get("mask_mode", "binary"))
     mask_weight_threshold = float(render_cfg.get("mask_weight_threshold", 0.05))
