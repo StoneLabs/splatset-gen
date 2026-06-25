@@ -14,6 +14,10 @@ from augment import (
     apply_tear_plan,
     apply_warp_plan,
     make_augmentation_rng,
+    maybe_gaussian_draw_fraction_range,
+    merge_post_augmentation,
+    init_augmentation_record,
+    finalize_augmentation_record,
     sample_tear_plan,
     sample_warp_plan,
 )
@@ -69,7 +73,7 @@ def test_full_augmentation_config() -> None:
     config = {
         "augmentation": {
             "enabled": True,
-            "lighting": {"enabled": True},
+            "lighting": {"enabled": True, "probability": 1.0},
             "blur": {"enabled": True, "probability": 1.0},
             "tear": {"enabled": False},
             "noise": {"enabled": True, "probability": 1.0, "std_range": [0.05, 0.05]},
@@ -81,13 +85,14 @@ def test_full_augmentation_config() -> None:
     out, meta, out_mask = apply_augmentation(rgb, config, np.random.default_rng(42), mask=None)
     assert out_mask is None
     assert meta["enabled"] is True
-    assert "order" in meta
-    assert meta["order"][0] == "lighting"
-    assert "lighting" in meta
-    assert "blur" in meta
-    assert "noise" in meta
-    assert "vignette" in meta
-    assert "chromatic_aberration" in meta
+    effects = [entry["effect"] for entry in meta["applied"]]
+    assert effects[0] == "lighting"
+    assert "lighting" in effects
+    assert "blur" in effects
+    assert "noise" in effects
+    assert "vignette" in effects
+    assert "chromatic_aberration" in effects
+    assert meta["applied"][0]["brightness"] is not None
     assert out.shape == rgb.shape
     assert not torch.allclose(out, rgb)
 
@@ -182,7 +187,7 @@ def test_augmentation_with_mask_tensor() -> None:
     config = {
         "augmentation": {
             "enabled": True,
-            "lighting": {"enabled": True},
+            "lighting": {"enabled": True, "probability": 1.0},
             "tear": {
                 "enabled": True,
                 "probability": 1.0,
@@ -196,7 +201,9 @@ def test_augmentation_with_mask_tensor() -> None:
     assert out_mask is not None
     assert out_mask.dtype == torch.uint8
     assert out_mask.shape == mask.shape
-    assert "tear" in meta
+    effects = [entry["effect"] for entry in meta["applied"]]
+    assert "tear" in effects
+    assert "lighting" in effects
     assert not torch.allclose(out_rgb, rgb)
 
 
@@ -239,7 +246,7 @@ def test_augmentation_rng_independent_of_worker() -> None:
     config = {
         "augmentation": {
             "enabled": True,
-            "lighting": {"enabled": True},
+            "lighting": {"enabled": True, "probability": 1.0},
             "blur": {"enabled": False},
             "tear": {"enabled": False},
             "warp": {"enabled": True, "probability": 1.0, "affine": {"enabled": True}},
@@ -290,3 +297,67 @@ def test_blur_meta_applies_same_motion_to_mask() -> None:
     rgb_fg = blurred_rgb.max(axis=2) > 0.5
     mask_fg = (blurred_mask.astype(np.float32) / 255.0) > 0.5
     assert np.array_equal(rgb_fg, mask_fg)
+
+
+def test_gaussian_subset_disabled_returns_none() -> None:
+    config = {"augmentation": {"enabled": True, "gaussian_subset": {"enabled": False}}}
+    assert maybe_gaussian_draw_fraction_range(config, np.random.default_rng(0)) is None
+
+
+def test_gaussian_subset_probability_gated() -> None:
+    config = {
+        "augmentation": {
+            "enabled": True,
+            "gaussian_subset": {
+                "enabled": True,
+                "probability": 0.0,
+                "fraction_range": [0.1, 1.0],
+            },
+        }
+    }
+    assert maybe_gaussian_draw_fraction_range(config, np.random.default_rng(0)) is None
+
+
+def test_gaussian_subset_returns_fraction_range() -> None:
+    config = {
+        "augmentation": {
+            "enabled": True,
+            "gaussian_subset": {
+                "enabled": True,
+                "probability": 1.0,
+                "fraction_range": [0.2, 0.8],
+            },
+        }
+    }
+    assert maybe_gaussian_draw_fraction_range(config, np.random.default_rng(0)) == [0.2, 0.8]
+
+
+def test_augmentation_record_ordered_applied_list() -> None:
+    record = init_augmentation_record(
+        {
+            "augmentation": {
+                "enabled": True,
+                "gaussian_subset": {"enabled": True, "probability": 0.4},
+            }
+        },
+    )
+    assert record is not None
+    assert record["applied"][0] == {"effect": "gaussian_subset", "enabled": True}
+
+    post = {
+        "enabled": True,
+        "applied": [
+            {"effect": "lighting", "brightness": 0.1, "contrast": 1.0, "gamma": 1.0, "saturation": 1.0, "warmth": 0.0},
+            {"effect": "blur", "type": "gaussian", "radius": 1.0},
+        ],
+    }
+    merged = merge_post_augmentation(record, post)
+    assert merged is not None
+    assert [entry["effect"] for entry in merged["applied"]] == [
+        "gaussian_subset",
+        "lighting",
+        "blur",
+    ]
+    finalized = finalize_augmentation_record(merged)
+    assert finalized is not None
+    assert "objects" not in finalized["applied"][0]

@@ -10,7 +10,19 @@ import numpy as np
 import torch
 
 import event_log
-from augment import apply_augmentation, apply_random_lines, make_augmentation_rng
+from augment import (
+    append_lines_augmentation,
+    apply_augmentation,
+    apply_random_lines,
+    finalize_augmentation_record,
+    format_augmentation_effect_detail,
+    format_augmentation_log,
+    get_augmentation_config,
+    init_augmentation_record,
+    make_augmentation_rng,
+    make_gaussian_subset_rng,
+    merge_post_augmentation,
+)
 from background import background_from_config, composite
 from camera import sample_random_camera
 from export import SampleRecord, export_sample
@@ -26,7 +38,7 @@ def _vlog(verbose: bool, message: str) -> None:
 
 
 def _vstatus(verbose: bool, phase: str, detail: str = "") -> None:
-    if verbose and event_log.is_active():
+    if event_log.is_active():
         event_log.worker_status(phase, detail)
 
 
@@ -54,7 +66,18 @@ def generate_one_sample(
         _vlog(verbose, f"[dim]worker[/] {torch_threads} torch threads")
 
     _vstatus(verbose, "scene", "building…")
-    scene, objects_meta = build_random_scene(ply_paths, config, rng, verbose=verbose)
+    subset_rng = make_gaussian_subset_rng(int(config.get("_seed", 0)), sample_id)
+    scene, objects_meta = build_random_scene(
+        ply_paths, config, rng, verbose=verbose, subset_rng=subset_rng
+    )
+    aug_record = init_augmentation_record(config)
+    if verbose and aug_record is not None:
+        _vlog(verbose, f"[dim]augment[/] pre-render · {format_augmentation_log(aug_record)}")
+        for entry in aug_record.get("applied", []):
+            _vlog(
+                verbose,
+                f"[dim]  {entry['effect']}[/] {format_augmentation_effect_detail(entry)}",
+            )
     lo, hi = scene.bounds()
     background = background_from_config(config, base_dir=project_root)
     scene_detail = (
@@ -129,7 +152,12 @@ def generate_one_sample(
 
             _vstatus(verbose, "pick", f"α>{alpha_threshold}")
             x, y, clicked_object_id = sample_click(
-                out.alpha, out.object_id_map, alpha_threshold, rng
+                out.alpha,
+                out.object_id_map,
+                alpha_threshold,
+                rng,
+                object_weights=out.object_weights,
+                weight_threshold=mask_weight_threshold,
             )
             mask = object_mask(
                 out.object_weights,
@@ -147,18 +175,22 @@ def generate_one_sample(
             if not click_inside_mask(mask, x, y, mode=mask_mode):
                 raise ValueError("Click pixel not inside object mask")
 
-            aug_cfg = config.get("augmentation", {})
+            aug_cfg = get_augmentation_config(config)
             if aug_cfg.get("enabled", False):
-                _vstatus(verbose, "augment", "lighting + postprocess")
-            aug_rng = make_augmentation_rng(int(config.get("_seed", 0)), sample_id)
-            rgb, aug_meta, mask = apply_augmentation(
+                _vstatus(verbose, "augment", "post-render")
+            aug_rng = make_augmentation_rng(int(config.get("_seed", 0)), sample_id, attempt)
+            rgb, post_aug, mask = apply_augmentation(
                 rgb, config, aug_rng, mask=mask, mask_mode=mask_mode
             )
-            if aug_meta:
-                order = aug_meta.get("order", [])
-                aug_detail = " → ".join(order) if order else "applied"
-                _vstatus(verbose, "augment", aug_detail)
-                _vlog(verbose, f"[dim]augment[/] order={order} · {aug_meta}")
+            aug_record = merge_post_augmentation(aug_record, post_aug)
+            if aug_record is not None and post_aug.get("applied"):
+                _vstatus(verbose, "augment", format_augmentation_log(aug_record))
+                for entry in post_aug.get("applied", []):
+                    _vlog(
+                        verbose,
+                        f"[dim]  {entry['effect']}[/] "
+                        f"{format_augmentation_effect_detail(entry)}",
+                    )
 
             if not click_inside_mask(mask, x, y, mode=mask_mode):
                 raise ValueError("Click pixel not inside object mask after augmentation")
@@ -171,12 +203,13 @@ def generate_one_sample(
                 config,
                 aug_rng,
             )
-            if lines_meta:
-                aug_meta = aug_meta or {"enabled": True, "order": []}
-                aug_meta["lines"] = lines_meta
-                aug_meta["order"].append("lines")
-                _vstatus(verbose, "lines", f"{lines_meta['count']} drawn · order +lines")
-                _vlog(verbose, f"[dim]lines[/] {lines_meta}")
+            if lines_meta is not None:
+                aug_record = append_lines_augmentation(aug_record, lines_meta)
+                _vstatus(verbose, "lines", f"{lines_meta['count']} drawn")
+                _vlog(
+                    verbose,
+                    f"[dim]  lines[/] count={lines_meta['count']}",
+                )
 
             if not click_inside_mask(mask, x, y, mode=mask_mode):
                 raise ValueError("Click pixel not inside object mask after line overlay")
@@ -197,20 +230,27 @@ def generate_one_sample(
                     "K": k.detach().cpu().tolist(),
                 },
                 objects=objects_meta,
-                augmentation=aug_meta or None,
+                augmentation=finalize_augmentation_record(aug_record),
             )
             _vstatus(verbose, "export", sample_id)
             export_sample(output_dir, sample_id, rgb, mask, record)
             _vstatus(verbose, "done", sample_id)
             _vlog(
                 verbose,
-                f"[dim]export[/] {record.image} · {record.mask} · oid={clicked_object_id}",
+                f"[dim]export[/] {record.image} · {record.mask} · oid={clicked_object_id}"
+                + (
+                    f" · aug={format_augmentation_log(record.augmentation)}"
+                    if record.augmentation
+                    else ""
+                ),
             )
             return record
         except (RuntimeError, ValueError) as exc:
             last_error = exc
             _vstatus(verbose, "retry", str(exc)[:48])
-            _vlog(verbose, f"[yellow]retry[/] {exc}")
+            if event_log.is_active():
+                event_log.worker_status("retry", str(exc)[:48])
+                event_log.log(f"[yellow]retry[/] {exc}")
             continue
 
     raise RuntimeError(f"Failed to generate sample after retries: {last_error}")

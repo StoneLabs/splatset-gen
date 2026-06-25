@@ -13,12 +13,20 @@ def sample_click(
     object_id_map: torch.Tensor,
     alpha_threshold: float = 0.5,
     rng: np.random.Generator | None = None,
+    *,
+    object_weights: torch.Tensor | None = None,
+    weight_threshold: float = 0.05,
 ) -> tuple[int, int, int]:
     """Sample foreground pixel (x, y) and return clicked object_id."""
     if rng is None:
         rng = np.random.default_rng()
 
     fg = (alpha > alpha_threshold) & (object_id_map >= 0)
+    if object_weights is not None and object_weights.numel() > 0:
+        oid = object_id_map.clamp(min=0)
+        contrib = object_weights.gather(-1, oid.unsqueeze(-1)).squeeze(-1)
+        fg = fg & (contrib > weight_threshold)
+
     ys, xs = torch.where(fg)
     if xs.numel() == 0:
         raise ValueError("No valid foreground pixels for click sampling")

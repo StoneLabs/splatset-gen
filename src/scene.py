@@ -7,9 +7,9 @@ from typing import Any
 
 import numpy as np
 import torch
-from plyfile import PlyData
 
 import event_log
+from augment import maybe_gaussian_draw_fraction_range
 from ply_loader import SceneGaussians, format_extent, load_ply
 
 
@@ -113,6 +113,7 @@ def build_random_scene(
     config: dict[str, Any],
     rng: np.random.Generator,
     verbose: bool = False,
+    subset_rng: np.random.Generator | None = None,
 ) -> tuple[SceneGaussians, list[dict[str, Any]]]:
     """Load, transform, and concatenate random PLY objects into one scene."""
     if not ply_paths:
@@ -126,6 +127,7 @@ def build_random_scene(
     scale_jitter = scene_cfg.get("scale_jitter", [0.8, 1.2])
 
     max_g = config.get("generation", {}).get("max_gaussians_per_object")
+    draw_rng = subset_rng if subset_rng is not None else rng
 
     num_objects = int(rng.integers(n_min, n_max + 1))
     chosen = [Path(rng.choice(ply_paths)) for _ in range(num_objects)]
@@ -149,18 +151,33 @@ def build_random_scene(
         if verbose and event_log.is_active():
             event_log.worker_status("scene", f"load {ply_path.name}")
 
-        n_total: int | None = None
-        if verbose and max_g is not None:
-            n_total = len(PlyData.read(str(ply_path))["vertex"])
-
-        obj, load_stats = load_ply(ply_path, max_gaussians=max_g, rng=rng)
+        draw_frac = maybe_gaussian_draw_fraction_range(config, draw_rng)
+        obj, load_stats = load_ply(
+            ply_path,
+            max_gaussians=max_g,
+            draw_fraction_range=draw_frac,
+            rng=rng,
+        )
         n_loaded = obj.num_gaussians
+        gaussians_meta: dict[str, Any] = {
+            "vertex_count": load_stats.vertex_count,
+            "loaded": n_loaded,
+        }
+        if load_stats.draw_fraction is not None and load_stats.draw_base is not None:
+            gaussians_meta["draw_base"] = load_stats.draw_base
+            gaussians_meta["draw_fraction"] = round(load_stats.draw_fraction, 4)
 
         if verbose and event_log.is_active():
-            if n_total is not None and n_total > n_loaded:
-                count_label = f"{n_loaded:,}/{n_total:,} gaussians (subset)"
+            if load_stats.draw_fraction is not None and load_stats.draw_base is not None:
+                count_label = (
+                    f"{n_loaded:,}/{load_stats.draw_base:,} gaussians "
+                    f"(subset {load_stats.draw_fraction:.0%} of base, "
+                    f"file {load_stats.vertex_count:,})"
+                )
+            elif load_stats.vertex_count > n_loaded:
+                count_label = f"{n_loaded:,}/{load_stats.vertex_count:,} gaussians (cap subset)"
             else:
-                count_label = f"{n_loaded:,} gaussians"
+                count_label = f"{n_loaded:,}/{load_stats.vertex_count:,} gaussians"
             extent_label = format_extent(load_stats)
             event_log.log(
                 f"[dim]ply[/] oid={object_id} {ply_path.name} · {count_label} · "
@@ -178,6 +195,7 @@ def build_random_scene(
             {
                 "object_id": object_id,
                 "ply": ply_path.name,
+                "gaussians": gaussians_meta,
                 "transform": {
                     "translation": placement.tolist(),
                     "rotation_euler_deg": np.rad2deg(euler).tolist(),

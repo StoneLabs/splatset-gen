@@ -90,73 +90,111 @@ generation:
   # max_gaussians_per_object: 8000
 
   augmentation:
-    # Post-render augmentations. Geometric effects (tear, warp, lines) stay aligned with mask.
+    # Training-time randomization applied after compositing (except gaussian_subset).
+    # Master switch: when false, no augmentation runs (including gaussian_subset).
+    # RNG is deterministic per run seed + sample id (worker-independent).
     enabled: true
-  
+
+    # Pre-render: draw each PLY with a random fraction of its Gaussians.
+    # Runs at scene build; independent probability roll per object slot.
+    # Base count = max_gaussians_per_object when set, else full PLY vertex count.
+    gaussian_subset:
+      enabled: true
+      # Chance this object uses a subset instead of the full load base.
+      probability: 0.4
+      # Uniform random fraction of the base to actually rasterize.
+      fraction_range: [0.1, 1.0]
+
+    # Photometric color grading on composited RGB (mask unchanged).
     lighting:
       enabled: true
+      probability: 0.4
+      # Additive offset in [0, 1] RGB space after contrast.
       brightness_range: [-0.25, 0.25]
+      # Multiplier on (pixel − 0.5) before brightness.
       contrast_range: [0.75, 1.25]
+      # Output raised to 1/gamma; <1 lifts shadows, >1 darkens midtones.
       gamma_range: [0.85, 1.15]
+      # 1.0 = unchanged; <1 desaturates, >1 boosts color vs gray.
       saturation_range: [0.6, 1.4]
+      # Shifts R up / B down (negative reverses); simulates warm/cool cast.
       warmth_range: [-0.2, 0.2]
-  
+
+    # Gaussian or motion blur; same kernel applied to RGB and mask.
     blur:
       enabled: true
       probability: 0.4
+      # Gaussian-blur radius in pixels (used when motion blur not chosen).
       radius_range: [0.5, 2.5]
+      # Chance of motion blur vs isotropic Gaussian when blur triggers.
       motion_probability: 0.5
       motion_length_range: [3, 15]
       motion_angle_range: [0, 180]
-  
+
+    # Band-shift tear: splits image into strips and shifts them (RGB + mask).
     tear:
       enabled: true
       probability: 0.4
       num_bands_range: [2, 6]
+      # Pixel shift per band; sign is random per band.
       shift_range: [-5, 5]
+      # True = horizontal bands; false = vertical.
       horizontal_probability: 0.5
-  
+
+    # One geometric warp per sample, chosen uniformly from enabled subtypes.
+    # RGB and mask warped together so labels stay aligned.
     warp:
       enabled: true
       probability: 0.3
       perspective:
         enabled: true
+        # Random corner displacement as fraction of image width/height.
         corner_jitter_range: [0.02, 0.12]
       barrel:
         enabled: true
+        # Negative radial strength (barrel / outward bulge).
         strength_range: [-0.2, -0.02]
       pincushion:
         enabled: true
+        # Positive radial strength (pincushion / inward pinch).
         strength_range: [0.02, 0.15]
       affine:
         enabled: true
         rotate_deg_range: [-8, 8]
         scale_range: [0.90, 1.10]
         shear_range: [-0.08, 0.08]
+        # Translation as fraction of image width/height.
         translate_frac_range: [-0.04, 0.04]
-  
+
+    # Channel shift in pixels (RGB-only; mask unchanged).
     chromatic_aberration:
       enabled: true
       probability: 0.4
       shift_range: [1, 4]
       horizontal_probability: 0.5
-  
+
+    # Additive Gaussian noise in RGB (mask unchanged).
     noise:
       enabled: true
       probability: 0.4
       std_range: [0.01, 0.06]
-  
+
+    # JPEG re-encode/decode round-trip (RGB-only).
     jpeg:
       enabled: true
       probability: 0.4
       quality_range: [10, 85]
-  
+
+    # Edge darkening vignette (RGB-only).
     vignette:
       enabled: true
       probability: 0.4
       strength_range: [0.2, 0.6]
+      # Radial falloff start as fraction of half-diagonal (0=center, 1=edge).
       falloff_start_range: [0.25, 0.45]
-  
+
+    # Random colored lines over RGB; erases clicked-object mask under each line.
+    # Applied after other augmentations; lines never cross the click pixel.
     lines:
       enabled: true
       probability: 0.5
@@ -164,6 +202,7 @@ generation:
       angle_deg_range: [0, 180]
       thickness_range: [1, 6]
       color_range: [0.00, 1.0]
+      # True = independent R/G/B; false = single shared luminance.
       color_per_channel: true
       max_attempts_per_line: 32
   
