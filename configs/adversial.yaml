@@ -1,6 +1,6 @@
 render:
-  width: 256
-  height: 256
+  width: 512
+  height: 512
   alpha_threshold: 0.5
   sh_degree: 0
   mask_mode: soft
@@ -14,32 +14,31 @@ background:
 
 scene:
   num_objects_min: 2
-  num_objects_max: 4
-  position_range: [-1.0, 1.0]
+  num_objects_max: 15
+  position_range: [-10.0, 10.0]
   rotation_deg_max: 45
-  scale_jitter: [0.6, 0.9]
+  scale_jitter: [0.25, 16]
 
 camera:
-  fov_deg_range: [50, 70]
-  distance_range: [2.5, 5.0]
+  fov_deg_range: [45, 69]
+  distance_range: [4.0, 8.0]
   max_retries: 20
 
 generation:
   max_camera_retries: 20
-  max_gaussians_per_object: 20000
+  #max_gaussians_per_object: 25000
 
 augmentation:
-  # Post-render augmentations. Geometric effects (tear, warp, lines) stay aligned with mask.
-  enabled: false
+  enabled: true
 
   gaussian_subset:
     enabled: true
-    probability: 0.1
-    fraction_range: [0.05, 1.0]
+    probability: 1
+    fraction_range: [0.01, 0.1]
 
   lighting:
     enabled: true
-    probability: 0.1
+    probability: 0.4
     brightness_range: [-0.25, 0.25]
     contrast_range: [0.75, 1.25]
     gamma_range: [0.85, 1.15]
@@ -48,7 +47,7 @@ augmentation:
 
   blur:
     enabled: true
-    probability: 0.1
+    probability: 0.4
     radius_range: [0.5, 2.5]
     motion_probability: 0.5
     motion_length_range: [3, 15]
@@ -56,14 +55,14 @@ augmentation:
 
   tear:
     enabled: true
-    probability: 0.1
+    probability: 0.4
     num_bands_range: [2, 6]
     shift_range: [-5, 5]
     horizontal_probability: 0.5
 
   warp:
     enabled: true
-    probability: 0.1
+    probability: 0.3
     perspective:
       enabled: true
       corner_jitter_range: [0.02, 0.12]
@@ -82,29 +81,29 @@ augmentation:
 
   chromatic_aberration:
     enabled: true
-    probability: 0.1
+    probability: 0.4
     shift_range: [1, 4]
     horizontal_probability: 0.5
 
   noise:
     enabled: true
-    probability: 0.1
+    probability: 0.4
     std_range: [0.01, 0.06]
 
   jpeg:
     enabled: true
-    probability: 0.1
-    quality_range: [10, 85]
+    probability: 0.4
+    quality_range: [5, 85]
 
   vignette:
     enabled: true
-    probability: 0.1
+    probability: 0.4
     strength_range: [0.2, 0.6]
     falloff_start_range: [0.25, 0.45]
 
   lines:
     enabled: true
-    probability: 0.1
+    probability: 0.5
     count_range: [1, 15]
     angle_deg_range: [0, 180]
     thickness_range: [1, 6]

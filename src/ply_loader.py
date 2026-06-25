@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +35,9 @@ class PlyLoadStats:
     max_extent_before: float
     extent_after: tuple[float, float, float]
     max_extent_after: float
+    vertex_count: int = 0
+    draw_base: int | None = None
+    draw_fraction: float | None = None
 
 
 @dataclass
@@ -121,9 +124,27 @@ def format_extent(stats: PlyLoadStats) -> str:
     return f"{stats.max_extent_before:.3f}→{stats.max_extent_after:.3f}"
 
 
+def resolve_gaussian_draw_count(
+    vertex_count: int,
+    max_gaussians: int | None,
+    draw_fraction_range: tuple[float, float] | list[float],
+    rng: np.random.Generator,
+) -> tuple[int, float, int]:
+    """Pick random Gaussian count from a fraction of the load base.
+
+    Base is ``min(vertex_count, max_gaussians)`` when capped, else ``vertex_count``.
+    """
+    lo, hi = float(draw_fraction_range[0]), float(draw_fraction_range[1])
+    base = min(vertex_count, max_gaussians) if max_gaussians is not None else vertex_count
+    fraction = float(rng.uniform(lo, hi))
+    count = max(1, min(int(round(fraction * base)), vertex_count))
+    return count, fraction, base
+
+
 def load_ply(
     path: str | Path,
     max_gaussians: int | None = None,
+    draw_fraction_range: tuple[float, float] | list[float] | None = None,
     rng: np.random.Generator | None = None,
 ) -> tuple[SceneGaussians, PlyLoadStats]:
     """Load one 3DGS PLY file as a single-object SceneGaussians (object_id=0).
@@ -134,8 +155,10 @@ def load_ply(
     Returns ``(gaussians, load_stats)`` where ``load_stats`` records bbox extent
     before and after normalization.
 
-    When ``max_gaussians`` is set and the PLY has more points, a random subset is
-    taken (without replacement). Pass ``rng`` for reproducible subsampling.
+    When ``draw_fraction_range`` is set, a random fraction of the load base is drawn
+    (base = ``max_gaussians`` cap or full PLY). Otherwise, when ``max_gaussians`` is
+    set and the PLY has more points, a random subset of that size is taken. Pass
+    ``rng`` for reproducible subsampling.
     """
     path = Path(path)
     if not path.exists():
@@ -148,10 +171,25 @@ def load_ply(
     vertex = ply["vertex"].data
     _require_fields(vertex, path)
 
-    if max_gaussians is not None and len(vertex) > max_gaussians:
+    vertex_count = len(vertex)
+    draw_base: int | None = None
+    draw_fraction: float | None = None
+    draw_count: int | None = None
+
+    if draw_fraction_range is not None:
         if rng is None:
             rng = np.random.default_rng()
-        pick = rng.choice(len(vertex), size=max_gaussians, replace=False)
+        draw_count, draw_fraction, draw_base = resolve_gaussian_draw_count(
+            vertex_count, max_gaussians, draw_fraction_range, rng
+        )
+    elif max_gaussians is not None and vertex_count > max_gaussians:
+        draw_count = max_gaussians
+        draw_base = max_gaussians
+
+    if draw_count is not None and vertex_count > draw_count:
+        if rng is None:
+            rng = np.random.default_rng()
+        pick = rng.choice(vertex_count, size=draw_count, replace=False)
         vertex = vertex[pick]
 
     means = np.stack([vertex["x"], vertex["y"], vertex["z"]], axis=-1).astype(np.float32)
@@ -181,6 +219,12 @@ def load_ply(
     quat_norm = np.maximum(quat_norm, 1e-8)
     quats = raw_quat / quat_norm
     means, scales, load_stats = _normalize_to_unit_extent(means, scales)
+    load_stats = replace(
+        load_stats,
+        vertex_count=vertex_count,
+        draw_base=draw_base,
+        draw_fraction=draw_fraction,
+    )
 
     n = means.shape[0]
     object_ids = np.zeros(n, dtype=np.int64)

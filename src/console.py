@@ -15,6 +15,7 @@ from typing import Any, Literal, TextIO
 import click
 
 from background import background_from_config, list_background_images
+from augment import get_augmentation_config
 
 from rich import box
 from rich.console import Console
@@ -138,22 +139,26 @@ class ProgressTracker:
 
     def on_done(self, worker_id: int, sample_id: str, elapsed: float, error: str | None) -> None:
         st = self.worker_states[worker_id]
-        if error:
-            st.status = "failed"
-            self.failed += 1
-            self._record(worker_id, f"[red]✗[/] {sample_id}  {escape(error[:72])}")
-        else:
-            self.completed += 1
-            self._record(worker_id, f"[green]✓[/] {sample_id}  [dim]{elapsed:.1f}s[/]")
-        st.status = "idle"
-        st.sample_id = "—"
-        st.elapsed = 0.0
-        st.started_at = None
         st.render_pct = None
         st.num_gaussians = None
         st.raster_started_at = None
-        st.phase = "—"
-        st.detail = "—"
+        st.started_at = None
+        if error:
+            st.status = "failed"
+            st.sample_id = sample_id
+            st.phase = "failed"
+            st.detail = escape(error[:120])
+            st.elapsed = elapsed
+            self.failed += 1
+            self._record(worker_id, f"[red]skip[/] {sample_id}  {escape(error[:120])}")
+        else:
+            st.status = "idle"
+            st.sample_id = "—"
+            st.phase = "—"
+            st.detail = "—"
+            st.elapsed = 0.0
+            self.completed += 1
+            self._record(worker_id, f"[green]✓[/] {sample_id}  [dim]{elapsed:.1f}s[/]")
 
     def on_render(self, worker_id: int, pct: float) -> None:
         st = self.worker_states[worker_id]
@@ -180,8 +185,8 @@ class ProgressTracker:
                 active += 1
         self._progress.update(
             self._task_id,
-            completed=self.completed,
-            active=f"{active} active",
+            completed=self.completed + self.failed,
+            active=f"{active} active · {self.failed} failed",
         )
 
 
@@ -249,17 +254,18 @@ def build_live_render(tracker: ProgressTracker) -> Table:
     worker_table.add_column("Sample", width=10)
     worker_table.add_column("Render", justify="right", width=7)
     worker_table.add_column("Gauss/s", justify="right", width=9)
-    if tracker.verbose:
-        worker_table.add_column("Phase", width=10)
-        worker_table.add_column("Detail", min_width=24, no_wrap=False)
+    worker_table.add_column("Phase", width=10)
+    worker_table.add_column("Detail", min_width=24, no_wrap=False)
     worker_table.add_column("Elapsed", justify="right", width=10)
 
     now = time.perf_counter()
     for wid in sorted(tracker.worker_states):
         st = tracker.worker_states[wid]
-        elapsed = f"{st.elapsed:.1f}s" if st.status == "working" else "—"
+        elapsed = f"{st.elapsed:.1f}s" if st.status in ("working", "failed") else "—"
         if st.status == "working" and st.render_pct is not None:
             render = f"{int(st.render_pct)}%"
+        elif st.status == "failed":
+            render = "—"
         else:
             render = "—"
         gauss_rate = _worker_gaussians_per_sec(st, now)
@@ -269,10 +275,10 @@ def build_live_render(tracker: ProgressTracker) -> Table:
             st.sample_id,
             render,
             gauss_rate,
+            st.phase,
+            st.detail,
+            elapsed,
         ]
-        if tracker.verbose:
-            row.extend([st.phase, st.detail])
-        row.append(elapsed)
         worker_table.add_row(*row)
 
     root.add_row(Panel(tracker._progress, border_style="cyan", padding=(0, 1)))
@@ -325,15 +331,24 @@ def _background_plan_lines(cfg: dict[str, Any], project_root: Path | None) -> li
 
 def _augmentation_plan_lines(cfg: dict[str, Any]) -> list[str]:
     """Augmentation section lines for the pre-run plan panel."""
-    aug = cfg.get("augmentation", {})
+    aug = get_augmentation_config(cfg)
     if not aug.get("enabled", False):
         return ["", "[bold underline]Augmentation[/]", "  Enabled          [dim]off[/]"]
 
     lines = ["", "[bold underline]Augmentation[/]", "  Enabled          [green]on[/]"]
-    if aug.get("lighting", {}).get("enabled", False):
-        lines.append("  Lighting         [green]on[/]  [dim](always per sample)[/]")
 
-    for name in ("blur", "tear", "warp", "chromatic_aberration", "noise", "jpeg", "vignette", "lines"):
+    for name in (
+        "gaussian_subset",
+        "lighting",
+        "blur",
+        "tear",
+        "warp",
+        "chromatic_aberration",
+        "noise",
+        "jpeg",
+        "vignette",
+        "lines",
+    ):
         effect = aug.get(name, {})
         if not effect.get("enabled", False):
             continue

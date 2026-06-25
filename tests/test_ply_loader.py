@@ -101,3 +101,35 @@ def test_max_gaussians_random_subsample(tmp_path: Path) -> None:
     assert sub_a.num_gaussians == 8
     np.testing.assert_allclose(sub_a.means.numpy(), sub_b.means.numpy())
     assert not np.allclose(sub_a.means.numpy(), sub_c.means.numpy())
+
+
+def test_draw_fraction_range_subsample(tmp_path: Path) -> None:
+    ply_path = write_synthetic_ply(tmp_path / "object.ply", num_gaussians=100)
+    rng = np.random.default_rng(0)
+
+    scene, stats = load_ply(
+        ply_path,
+        max_gaussians=50,
+        draw_fraction_range=[0.5, 0.5],
+        rng=rng,
+    )
+
+    assert scene.num_gaussians == 25
+    assert stats.vertex_count == 100
+    assert stats.draw_base == 50
+    assert stats.draw_fraction == pytest.approx(0.5)
+
+
+def test_draw_fraction_uses_full_ply_without_cap(tmp_path: Path) -> None:
+    ply_path = write_synthetic_ply(tmp_path / "object.ply", num_gaussians=20)
+    rng = np.random.default_rng(0)
+
+    scene, stats = load_ply(
+        ply_path,
+        draw_fraction_range=[0.25, 0.25],
+        rng=rng,
+    )
+
+    assert scene.num_gaussians == 5
+    assert stats.draw_base == 20
+    assert stats.draw_fraction == pytest.approx(0.25)

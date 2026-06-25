@@ -69,7 +69,7 @@ def render(
     sort_idx = torch.argsort(depth)
     win_size = torch.tensor([width, height], device=device, dtype=dtype)
     n_sorted = sort_idx.numel()
-    report_every_ui = max(1, n_sorted // 100)
+    report_every_ui = max(1, n_sorted // 20)
     report_every_log = max(1, n_sorted // 20)
 
     yy = torch.arange(height, device=device, dtype=dtype)
@@ -83,9 +83,7 @@ def render(
                 event_log.render_progress(pct)
         if verbose and (j % report_every_log == 0 or j == n_sorted - 1):
             pct_label = f"{pct:5.1f}% ({j + 1}/{n_sorted})"
-            if event_log.is_active():
-                event_log.log(f"[dim]rasterize[/] {pct_label}")
-            else:
+            if not event_log.is_active():
                 print(f"  rasterize {pct_label}", flush=True)
 
         d = depth[idx].item()

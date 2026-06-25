@@ -10,11 +10,133 @@ import torch
 from PIL import Image, ImageDraw, ImageFilter
 
 AUGMENTATION_SEED_STRIDE = 1_000_003
+GAUSSIAN_SUBSET_SEED_STRIDE = 1_000_033
+AUGMENTATION_RETRY_STRIDE = 97
 
 
-def make_augmentation_rng(master_seed: int, sample_id: str) -> np.random.Generator:
+def make_augmentation_rng(
+    master_seed: int,
+    sample_id: str,
+    attempt: int = 0,
+) -> np.random.Generator:
     """Deterministic augmentation RNG from run seed + sample id (worker-independent)."""
-    return np.random.default_rng(master_seed + int(sample_id) * AUGMENTATION_SEED_STRIDE)
+    return np.random.default_rng(
+        master_seed
+        + int(sample_id) * AUGMENTATION_SEED_STRIDE
+        + int(attempt) * AUGMENTATION_RETRY_STRIDE
+    )
+
+
+def make_gaussian_subset_rng(master_seed: int, sample_id: str) -> np.random.Generator:
+    """Worker-independent RNG for optional pre-render Gaussian subsetting."""
+    return np.random.default_rng(master_seed + int(sample_id) * GAUSSIAN_SUBSET_SEED_STRIDE)
+
+
+def get_augmentation_config(config: dict[str, Any]) -> dict[str, Any]:
+    if "augmentation" in config:
+        return config["augmentation"]
+    return config.get("generation", {}).get("augmentation", {})
+
+
+def maybe_gaussian_draw_fraction_range(
+    config: dict[str, Any],
+    rng: np.random.Generator,
+) -> list[float] | None:
+    """Return Gaussian draw fraction range when gaussian_subset augmentation triggers."""
+    aug_cfg = get_augmentation_config(config)
+    if not aug_cfg.get("enabled", False):
+        return None
+
+    subset_cfg = aug_cfg.get("gaussian_subset", {})
+    if not subset_cfg.get("enabled", False):
+        return None
+    if rng.random() >= float(subset_cfg.get("probability", 1.0)):
+        return None
+
+    frac = subset_cfg.get("fraction_range", [0.1, 1.0])
+    return [float(frac[0]), float(frac[1])]
+
+
+def _append_effect(applied: list[dict[str, Any]], effect: str, params: dict[str, Any]) -> None:
+    applied.append({"effect": effect, **params})
+
+
+def gaussian_subset_augmentation_entry(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Record whether gaussian_subset is enabled in config (details live on each object)."""
+    aug_cfg = get_augmentation_config(config)
+    if "gaussian_subset" not in aug_cfg:
+        return None
+    return {
+        "effect": "gaussian_subset",
+        "enabled": bool(aug_cfg.get("gaussian_subset", {}).get("enabled", False)),
+    }
+
+
+def init_augmentation_record(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Start augmentation metadata with any pre-render effect flags."""
+    if not get_augmentation_config(config).get("enabled", False):
+        return None
+
+    applied: list[dict[str, Any]] = []
+    subset = gaussian_subset_augmentation_entry(config)
+    if subset is not None:
+        applied.append(subset)
+    return {"enabled": True, "applied": applied}
+
+
+def merge_post_augmentation(
+    record: dict[str, Any] | None,
+    post_meta: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Append post-render augmentation effects in application order."""
+    if not post_meta.get("enabled"):
+        return record
+    if record is None:
+        return post_meta
+    record["applied"].extend(post_meta.get("applied", []))
+    return record
+
+
+def append_lines_augmentation(
+    record: dict[str, Any] | None,
+    lines_meta: dict[str, Any],
+) -> dict[str, Any] | None:
+    if record is None:
+        record = {"enabled": True, "applied": []}
+    _append_effect(record["applied"], "lines", lines_meta)
+    return record
+
+
+def finalize_augmentation_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if record is None or not record.get("applied"):
+        return None
+    return record
+
+
+def format_augmentation_log(meta: dict[str, Any]) -> str:
+    """One-line summary of applied augmentation effects for verbose logging."""
+    labels: list[str] = []
+    for entry in meta.get("applied", []):
+        effect = entry.get("effect", "?")
+        if effect == "gaussian_subset":
+            state = "on" if entry.get("enabled") else "off"
+            labels.append(f"gaussian_subset={state}")
+        elif effect == "lines":
+            labels.append(f"lines×{entry.get('count', 0)}")
+        else:
+            labels.append(effect)
+    return " → ".join(labels)
+
+
+def format_augmentation_effect_detail(entry: dict[str, Any]) -> str:
+    """Compact parameter summary for one applied effect."""
+    effect = entry.get("effect", "?")
+    if effect == "gaussian_subset":
+        return "enabled" if entry.get("enabled") else "disabled"
+    if effect == "lines":
+        return f"count={entry.get('count', 0)}"
+    params = {key: value for key, value in entry.items() if key != "effect"}
+    return str(params)
 
 
 def _clip_rgb(arr: np.ndarray) -> np.ndarray:
@@ -602,7 +724,7 @@ def apply_random_lines(
 
     Lines are rejected when they would cover the click pixel ``(click_x, click_y)``.
     """
-    aug_cfg = config.get("augmentation", {})
+    aug_cfg = get_augmentation_config(config)
     lines_cfg = aug_cfg.get("lines", {})
     if not aug_cfg.get("enabled", False) or not lines_cfg.get("enabled", False):
         return rgb, mask, None
@@ -680,7 +802,7 @@ def apply_augmentation(
     Geometric effects (tear, warp) run first on RGB and mask together. Blur uses
     the same kernel on both. Other photometric effects are RGB-only.
     """
-    aug_cfg = config.get("augmentation", {})
+    aug_cfg = get_augmentation_config(config)
     if not aug_cfg.get("enabled", False):
         return rgb, {}, mask
 
@@ -689,7 +811,7 @@ def apply_augmentation(
     if mask is not None:
         mask_arr = mask.detach().cpu().numpy().copy()
 
-    applied: dict[str, Any] = {"enabled": True, "order": []}
+    applied: list[dict[str, Any]] = []
 
     tear_cfg = aug_cfg.get("tear", {})
     if tear_cfg.get("enabled", False) and rng.random() < float(tear_cfg.get("probability", 1.0)):
@@ -697,30 +819,26 @@ def apply_augmentation(
         rgb_arr = apply_tear_plan(rgb_arr, plan)
         if mask_arr is not None:
             mask_arr = apply_tear_plan(mask_arr, plan)
-        applied["tear"] = tear_meta
-        applied["order"].append("tear")
+        _append_effect(applied, "tear", tear_meta)
 
     warp_cfg = aug_cfg.get("warp", {})
     if warp_cfg.get("enabled", False) and rng.random() < float(warp_cfg.get("probability", 1.0)):
         plan, warp_meta = sample_warp_plan(rgb_arr.shape[:2], warp_cfg, rng)
         if plan is not None:
             rgb_arr, mask_arr = apply_warp_plan(rgb_arr, mask_arr, plan, mask_mode=mask_mode)
-            applied["warp"] = warp_meta
-            applied["order"].append("warp")
+            _append_effect(applied, "warp", warp_meta)
 
     lighting_cfg = aug_cfg.get("lighting", {})
-    if lighting_cfg.get("enabled", False):
+    if lighting_cfg.get("enabled", False) and rng.random() < float(lighting_cfg.get("probability", 1.0)):
         rgb_arr, lighting_meta = apply_lighting(rgb_arr, lighting_cfg, rng)
-        applied["lighting"] = lighting_meta
-        applied["order"].append("lighting")
+        _append_effect(applied, "lighting", lighting_meta)
 
     blur_cfg = aug_cfg.get("blur", {})
     if blur_cfg.get("enabled", False) and rng.random() < float(blur_cfg.get("probability", 1.0)):
         rgb_arr, blur_meta = apply_blur(rgb_arr, blur_cfg, rng)
         if mask_arr is not None:
             mask_arr = apply_blur_meta(mask_arr, blur_meta)
-        applied["blur"] = blur_meta
-        applied["order"].append("blur")
+        _append_effect(applied, "blur", blur_meta)
 
     photometric_fns = (
         ("chromatic_aberration", apply_chromatic_aberration),
@@ -732,11 +850,10 @@ def apply_augmentation(
         effect_cfg = aug_cfg.get(name, {})
         rgb_arr, meta = _maybe_apply(rng, effect_cfg, fn, rgb_arr)
         if meta is not None:
-            applied[name] = meta
-            applied["order"].append(name)
+            _append_effect(applied, name, meta)
 
     out_rgb = torch.from_numpy(_clip_rgb(rgb_arr)).to(device=rgb.device, dtype=rgb.dtype)
     out_mask: torch.Tensor | None = None
     if mask is not None and mask_arr is not None:
         out_mask = torch.from_numpy(mask_arr.astype(np.uint8)).to(device=mask.device, dtype=mask.dtype)
-    return out_rgb, applied, out_mask
+    return out_rgb, {"enabled": True, "applied": applied}, out_mask

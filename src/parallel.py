@@ -22,6 +22,7 @@ from sample import generate_one_sample
 
 _PROGRESS_QUEUE: Any = None
 _WORKER_SLOT: int = 0
+WORKER_FAIL_PAUSE_S = 1.0
 
 
 def _pool_init(progress_queue: Any, slot_counter: Any, slot_lock: Any) -> None:
@@ -66,69 +67,102 @@ def _worker(
         )
         elapsed = time.perf_counter() - t0
         _emit("done", worker_id, sample_id, elapsed, None)
+        return sample_id
     except Exception as exc:
         elapsed = time.perf_counter() - t0
-        _emit("done", worker_id, sample_id, elapsed, str(exc))
-        raise
+        error_msg = str(exc)
+        _emit("done", worker_id, sample_id, elapsed, error_msg)
+        time.sleep(WORKER_FAIL_PAUSE_S)
+        return None
 
-    return sample_id
+
+MAX_QUEUE_DRAIN = 500
+
+
+def _flush_pending_renders(
+    tracker: ProgressTracker,
+    pending_render: dict[int, float],
+) -> None:
+    for worker_id, pct in pending_render.items():
+        tracker.on_render(worker_id, pct)
+    pending_render.clear()
+
+
+def _dispatch_queue_message(tracker: ProgressTracker, msg: tuple[Any, ...]) -> None:
+    kind = msg[0]
+    if kind == "start":
+        _, worker_id, sample_id = msg
+        tracker.on_start(worker_id, sample_id)
+    elif kind == "done":
+        _, worker_id, sample_id, elapsed, error = msg
+        tracker.on_done(worker_id, sample_id, elapsed, error)
+    elif kind == "log":
+        _, worker_id, message = msg
+        tracker.on_log(worker_id, message)
+    elif kind == "render":
+        _, worker_id, pct = msg
+        tracker.on_render(worker_id, pct)
+    elif kind == "gaussians":
+        _, worker_id, count = msg
+        tracker.on_gaussians(worker_id, count)
+    elif kind == "status":
+        _, worker_id, phase, detail = msg
+        tracker.on_status(worker_id, phase, detail)
 
 
 def _drain_queue(queue: Any, tracker: ProgressTracker) -> None:
-    while True:
+    pending_render: dict[int, float] = {}
+    drained = 0
+    while drained < MAX_QUEUE_DRAIN:
         try:
             msg = queue.get_nowait()
         except Empty:
             break
-        kind = msg[0]
-        if kind == "start":
-            _, worker_id, sample_id = msg
-            tracker.on_start(worker_id, sample_id)
-        elif kind == "done":
-            _, worker_id, sample_id, elapsed, error = msg
-            tracker.on_done(worker_id, sample_id, elapsed, error)
-        elif kind == "log":
-            _, worker_id, message = msg
-            tracker.on_log(worker_id, message)
-        elif kind == "render":
-            _, worker_id, pct = msg
-            tracker.on_render(worker_id, pct)
-        elif kind == "gaussians":
-            _, worker_id, count = msg
-            tracker.on_gaussians(worker_id, count)
-        elif kind == "status":
-            _, worker_id, phase, detail = msg
-            tracker.on_status(worker_id, phase, detail)
+        drained += 1
+        if msg[0] == "render":
+            pending_render[int(msg[1])] = float(msg[2])
+            continue
+        _flush_pending_renders(tracker, pending_render)
+        _dispatch_queue_message(tracker, msg)
+    _flush_pending_renders(tracker, pending_render)
+
+
+def _refresh_live(
+    progress_queue: Any,
+    tracker: ProgressTracker,
+    live: Live,
+) -> None:
+    _drain_queue(progress_queue, tracker)
+    tracker.tick()
+    live.update(build_live_render(tracker))
 
 
 def _run_with_live(
     tracker: ProgressTracker,
     progress_queue: Any,
     run_fn: Any,
-) -> list[str]:
-    """Run ``run_fn`` while a background thread pumps progress events to the UI."""
-    with Live(build_live_render(tracker), refresh_per_second=10, transient=False) as live:
-        stop = threading.Event()
+) -> list[str | None]:
+    """Run ``run_fn`` on a worker thread; pump queue + refresh Live on the main thread."""
+    holder: dict[str, Any] = {"results": None, "error": None}
 
-        def pump() -> None:
-            while not stop.is_set():
-                _drain_queue(progress_queue, tracker)
-                tracker.tick()
-                live.update(build_live_render(tracker))
-                stop.wait(0.08)
-
-        pump_thread = threading.Thread(target=pump, daemon=True)
-        pump_thread.start()
+    def run_in_background() -> None:
         try:
-            results = run_fn()
-        finally:
-            stop.set()
-            pump_thread.join(timeout=2.0)
-            _drain_queue(progress_queue, tracker)
-            tracker.tick()
-            live.update(build_live_render(tracker))
+            holder["results"] = run_fn()
+        except BaseException as exc:
+            holder["error"] = exc
 
-    return results
+    with Live(build_live_render(tracker), refresh_per_second=12, transient=False) as live:
+        bg = threading.Thread(target=run_in_background, daemon=False)
+        bg.start()
+        while bg.is_alive():
+            _refresh_live(progress_queue, tracker, live)
+            bg.join(timeout=0.08)
+        _refresh_live(progress_queue, tracker, live)
+        bg.join()
+        if holder["error"] is not None:
+            raise holder["error"]
+
+    return holder["results"] or []
 
 
 def generate_dataset_parallel(
@@ -172,9 +206,9 @@ def generate_dataset_parallel(
 
     if not show_progress:
         if workers <= 1:
-            return [_worker(t) for t in tasks]
+            return [sid for sid in (_worker(t) for t in tasks) if sid is not None]
         with Pool(processes=workers) as pool:
-            return pool.map(_worker, tasks)
+            return [sid for sid in pool.map(_worker, tasks) if sid is not None]
 
     manager = Manager()
     progress_queue = manager.Queue()
@@ -186,7 +220,7 @@ def generate_dataset_parallel(
         _PROGRESS_QUEUE = progress_queue
         _WORKER_SLOT = 0
         event_log.bind(progress_queue, 0)
-        out: list[str] = []
+        out: list[str | None] = []
         for task in tasks:
             out.append(_worker(task))
         _PROGRESS_QUEUE = None
@@ -203,15 +237,16 @@ def generate_dataset_parallel(
 
     try:
         if workers <= 1:
-            results = _run_with_live(tracker, progress_queue, run_sequential)
+            raw = _run_with_live(tracker, progress_queue, run_sequential)
         else:
-            results = _run_with_live(tracker, progress_queue, run_pool)
+            raw = _run_with_live(tracker, progress_queue, run_pool)
     finally:
         tracker.close_log()
 
+    results = sorted(sid for sid in raw if sid is not None)
     elapsed = time.perf_counter() - t0
     print_summary(output_dir, tracker.completed, tracker.failed, elapsed)
-    return sorted(results)
+    return results
 
 
 def load_config(path: Path) -> dict[str, Any]:
