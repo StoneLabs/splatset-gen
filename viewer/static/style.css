@@ -89,14 +89,9 @@ h2 {
 }
 
 .nav-controls button:hover,
-.ghost:hover {
+.ghost:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent-soft);
-}
-
-.nav-controls button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
 }
 
 .index-input,
@@ -197,6 +192,17 @@ h2 {
   background: var(--accent-soft);
   color: #c9dcff;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.muted-chip {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+}
+
+.nav-controls button:disabled,
+.ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .panel-body {
@@ -322,6 +328,80 @@ body.dragging-splitter .splitter-h * {
   max-height: none;
   border-radius: 6px;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.panel-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+
+.panel-placeholder[hidden],
+#ai-prediction-image[hidden] {
+  display: none !important;
+}
+
+.error-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.error-dialog-backdrop[hidden] {
+  display: none !important;
+}
+
+.error-dialog {
+  width: min(32rem, 100%);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.error-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--panel-border);
+  background: rgba(255, 77, 79, 0.08);
+}
+
+.error-dialog header h2 {
+  font-size: 0.95rem;
+  color: #ffb4b4;
+}
+
+.error-dialog-body {
+  margin: 0;
+  padding: 1rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.error-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--panel-border);
 }
 
 .code-panel {

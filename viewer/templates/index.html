@@ -28,6 +28,9 @@
         <button id="btn-last" type="button" title="Last sample (End)">▶|</button>
       </div>
       <div class="toolbar-group view-controls">
+        <button id="btn-run-ai" type="button" class="ghost" disabled title="Run segmentation model on current sample (P)">
+          Run AI
+        </button>
         <label class="checkbox-input" title="Scale images to fill panel instead of native pixel size">
           <input id="fit-to-panel" type="checkbox" checked />
           <span>Fit images to panel</span>
@@ -89,6 +92,26 @@
             <canvas id="overlay-canvas"></canvas>
           </div>
         </section>
+
+        <div
+          class="splitter splitter-v"
+          id="splitter-col-ai"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize overlay and AI columns"
+          tabindex="0"
+        ></div>
+
+        <section class="panel" aria-label="AI predicted mask">
+          <header>
+            <h2>AI Prediction</h2>
+            <span id="ai-model-label" class="chip muted-chip">no model</span>
+          </header>
+          <div class="panel-body image-panel fit-mode" id="ai-panel">
+            <img id="ai-prediction-image" alt="AI prediction not generated yet" hidden />
+            <p id="ai-placeholder" class="panel-placeholder">Click Run AI to predict a mask for the current sample.</p>
+          </div>
+        </section>
       </div>
 
       <div
@@ -131,6 +154,19 @@
         </section>
       </div>
     </main>
+
+    <div id="error-dialog-backdrop" class="error-dialog-backdrop" hidden>
+      <div class="error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="error-dialog-title">
+        <header>
+          <h2 id="error-dialog-title">Error</h2>
+          <button id="error-dialog-close" type="button" class="ghost" aria-label="Close error dialog">✕</button>
+        </header>
+        <pre id="error-dialog-message" class="error-dialog-body"></pre>
+        <footer>
+          <button id="error-dialog-ok" type="button">OK</button>
+        </footer>
+      </div>
+    </div>
 
     <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   </body>

@@ -3,12 +3,13 @@ const STORAGE_KEYS = {
   colRatio: "viewer-layout-col-ratio",
   topCol1: "viewer-layout-top-col1",
   topCol2: "viewer-layout-top-col2",
+  topCol3: "viewer-layout-top-col3",
   fitToPanel: "viewer-fit-to-panel",
   maskOpacity: "viewer-mask-opacity",
 };
 
 const LAYOUT_LIMITS = {
-  min: 0.15,
+  min: 0.12,
   max: 0.7,
 };
 
@@ -20,9 +21,12 @@ const state = {
   fitToPanel: true,
   rowRatio: 0.58,
   colRatio: 0.5,
-  topCol1: 0.33,
-  topCol2: 0.34,
+  topCol1: 0.24,
+  topCol2: 0.24,
+  topCol3: 0.24,
   maskOpacity: 0.5,
+  modelLoaded: false,
+  aiPredictionUrl: null,
   imageCache: null,
 };
 
@@ -33,6 +37,7 @@ const els = {
   splitterRow: document.getElementById("splitter-row"),
   splitterCol: document.getElementById("splitter-col"),
   splitterColOverlay: document.getElementById("splitter-col-overlay"),
+  splitterColAi: document.getElementById("splitter-col-ai"),
   splitterColBottom: document.getElementById("splitter-col-bottom"),
   datasetPath: document.getElementById("dataset-path"),
   sampleIndex: document.getElementById("sample-index"),
@@ -47,6 +52,10 @@ const els = {
   maskImage: document.getElementById("mask-image"),
   overlayPanel: document.getElementById("overlay-panel"),
   overlayCanvas: document.getElementById("overlay-canvas"),
+  aiPanel: document.getElementById("ai-panel"),
+  aiPredictionImage: document.getElementById("ai-prediction-image"),
+  aiPlaceholder: document.getElementById("ai-placeholder"),
+  aiModelLabel: document.getElementById("ai-model-label"),
   maskOpacity: document.getElementById("mask-opacity"),
   maskOpacityLabel: document.getElementById("mask-opacity-label"),
   annotationJson: document.getElementById("annotation-json"),
@@ -58,6 +67,12 @@ const els = {
   btnLast: document.getElementById("btn-last"),
   btnCopyJson: document.getElementById("btn-copy-json"),
   btnCopyConfig: document.getElementById("btn-copy-config"),
+  btnRunAi: document.getElementById("btn-run-ai"),
+  errorDialogBackdrop: document.getElementById("error-dialog-backdrop"),
+  errorDialogTitle: document.getElementById("error-dialog-title"),
+  errorDialogMessage: document.getElementById("error-dialog-message"),
+  errorDialogClose: document.getElementById("error-dialog-close"),
+  errorDialogOk: document.getElementById("error-dialog-ok"),
 };
 
 function clamp(value, min, max) {
@@ -79,6 +94,7 @@ function loadLayoutPrefs() {
   const col = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.colRatio));
   const topCol1 = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.topCol1));
   const topCol2 = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.topCol2));
+  const topCol3 = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.topCol3));
   const fit = localStorage.getItem(STORAGE_KEYS.fitToPanel);
   const maskOpacity = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.maskOpacity));
 
@@ -94,6 +110,9 @@ function loadLayoutPrefs() {
   if (!Number.isNaN(topCol2)) {
     state.topCol2 = topCol2;
   }
+  if (!Number.isNaN(topCol3)) {
+    state.topCol3 = topCol3;
+  }
   if (fit !== null) {
     state.fitToPanel = fit === "true";
   }
@@ -105,14 +124,10 @@ function loadLayoutPrefs() {
 }
 
 function normalizeTopColumns() {
-  state.topCol1 = clamp(state.topCol1, LAYOUT_LIMITS.min, LAYOUT_LIMITS.max);
-  state.topCol2 = clamp(state.topCol2, LAYOUT_LIMITS.min, LAYOUT_LIMITS.max);
-  const maxSecond = 1 - state.topCol1 - LAYOUT_LIMITS.min;
-  state.topCol2 = clamp(state.topCol2, LAYOUT_LIMITS.min, maxSecond);
-  const overflow = state.topCol1 + state.topCol2 - (1 - LAYOUT_LIMITS.min);
-  if (overflow > 0) {
-    state.topCol2 -= overflow;
-  }
+  const min = LAYOUT_LIMITS.min;
+  state.topCol1 = clamp(state.topCol1, min, 1 - 3 * min);
+  state.topCol2 = clamp(state.topCol2, min, 1 - state.topCol1 - 2 * min);
+  state.topCol3 = clamp(state.topCol3, min, 1 - state.topCol1 - state.topCol2 - min);
 }
 
 function saveLayoutPrefs() {
@@ -120,6 +135,7 @@ function saveLayoutPrefs() {
   localStorage.setItem(STORAGE_KEYS.colRatio, String(state.colRatio));
   localStorage.setItem(STORAGE_KEYS.topCol1, String(state.topCol1));
   localStorage.setItem(STORAGE_KEYS.topCol2, String(state.topCol2));
+  localStorage.setItem(STORAGE_KEYS.topCol3, String(state.topCol3));
   localStorage.setItem(STORAGE_KEYS.fitToPanel, String(state.fitToPanel));
   localStorage.setItem(STORAGE_KEYS.maskOpacity, String(state.maskOpacity));
 }
@@ -134,10 +150,11 @@ function applyLayout() {
   els.rowBottom.style.flex = `${bottomWeight} 1 0%`;
 
   const topPanels = getRowPanels(els.rowTop);
-  const topCol3 = 1 - state.topCol1 - state.topCol2;
+  const topCol4 = 1 - state.topCol1 - state.topCol2 - state.topCol3;
   topPanels[0].style.flex = `${state.topCol1} 1 0%`;
   topPanels[1].style.flex = `${state.topCol2} 1 0%`;
-  topPanels[2].style.flex = `${topCol3} 1 0%`;
+  topPanels[2].style.flex = `${state.topCol3} 1 0%`;
+  topPanels[3].style.flex = `${topCol4} 1 0%`;
 
   const bottomPanels = getRowPanels(els.rowBottom);
   bottomPanels[0].style.flex = `${leftWeight} 1 0%`;
@@ -146,7 +163,7 @@ function applyLayout() {
 
 function applyFitMode() {
   const modeClass = state.fitToPanel ? "fit-mode" : "native-mode";
-  for (const panel of [els.renderPanel, els.maskPanel, els.overlayPanel]) {
+  for (const panel of [els.renderPanel, els.maskPanel, els.overlayPanel, els.aiPanel]) {
     panel.classList.remove("fit-mode", "native-mode");
     panel.classList.add(modeClass);
   }
@@ -163,6 +180,45 @@ function setStatus(text) {
   els.statusText.textContent = text;
 }
 
+function showErrorDialog(title, message) {
+  els.errorDialogTitle.textContent = title;
+  els.errorDialogMessage.textContent = message;
+  els.errorDialogBackdrop.hidden = false;
+}
+
+function hideErrorDialog() {
+  els.errorDialogBackdrop.hidden = true;
+}
+
+function reportError(title, message, error) {
+  console.error(title, error ?? message);
+  showErrorDialog(title, message);
+  setStatus(`${title}: ${message.split("\n")[0]}`);
+}
+
+async function readErrorResponse(response) {
+  const text = await response.text();
+  try {
+    const payload = JSON.parse(text);
+    if (typeof payload.error === "string" && payload.error) {
+      return payload.error;
+    }
+  } catch {
+    // Not JSON — fall through to HTML/plain parsing.
+  }
+
+  const htmlMatch = text.match(/<p>([^<]+)<\/p>/i);
+  if (htmlMatch?.[1]) {
+    return htmlMatch[1].trim();
+  }
+
+  const trimmed = text.trim();
+  if (trimmed) {
+    return trimmed.slice(0, 500);
+  }
+  return `Request failed: ${response.status}`;
+}
+
 function updateNavButtons() {
   const atStart = state.index <= 0;
   const atEnd = state.index >= state.total - 1;
@@ -170,6 +226,93 @@ function updateNavButtons() {
   els.btnPrev.disabled = atStart || state.loading;
   els.btnNext.disabled = atEnd || state.loading;
   els.btnLast.disabled = atEnd || state.loading;
+  els.btnRunAi.disabled = state.loading || state.total === 0;
+}
+
+function clearAiPrediction() {
+  if (state.aiPredictionUrl) {
+    URL.revokeObjectURL(state.aiPredictionUrl);
+    state.aiPredictionUrl = null;
+  }
+  els.aiPredictionImage.removeAttribute("src");
+  els.aiPredictionImage.hidden = true;
+  els.aiPlaceholder.hidden = false;
+}
+
+function setModelUi(model) {
+  state.modelLoaded = Boolean(model?.loaded);
+  if (state.modelLoaded) {
+    const name = model.checkpoint.split(/[/\\]/).pop();
+    els.aiModelLabel.textContent = `${name} · ep ${model.epoch}`;
+    els.aiModelLabel.classList.remove("muted-chip");
+  } else {
+    els.aiModelLabel.textContent = "no model";
+    els.aiModelLabel.classList.add("muted-chip");
+  }
+  updateNavButtons();
+}
+
+async function runAiPrediction() {
+  if (state.loading || state.total === 0) {
+    return;
+  }
+
+  if (!state.modelLoaded) {
+    reportError(
+      "AI unavailable",
+      "No model loaded. Pass --model or set inference.checkpoint in training_config.yaml.",
+    );
+    return;
+  }
+
+  state.loading = true;
+  updateNavButtons();
+  setStatus("Running AI prediction…");
+
+  try {
+    const response = await fetch(`/api/predict/index/${state.index}`);
+    if (!response.ok) {
+      throw new Error(await readErrorResponse(response));
+    }
+    const blob = await response.blob();
+    if (!blob.type.startsWith("image/")) {
+      throw new Error("Server returned a non-image response for prediction.");
+    }
+
+    clearAiPrediction();
+    const objectUrl = URL.createObjectURL(blob);
+    await new Promise((resolve, reject) => {
+      const onLoad = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = () => {
+        cleanup();
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("Failed to decode AI prediction image."));
+      };
+      const cleanup = () => {
+        els.aiPredictionImage.removeEventListener("load", onLoad);
+        els.aiPredictionImage.removeEventListener("error", onError);
+      };
+      els.aiPredictionImage.addEventListener("load", onLoad);
+      els.aiPredictionImage.addEventListener("error", onError);
+      state.aiPredictionUrl = objectUrl;
+      els.aiPredictionImage.src = objectUrl;
+      if (els.aiPredictionImage.complete) {
+        onLoad();
+      }
+    });
+
+    els.aiPredictionImage.hidden = false;
+    els.aiPlaceholder.hidden = true;
+    setStatus(`AI prediction ready · sample ${state.index + 1}`);
+  } catch (error) {
+    reportError("AI prediction failed", error.message, error);
+  } finally {
+    state.loading = false;
+    updateNavButtons();
+  }
 }
 
 async function fetchJson(url) {
@@ -307,6 +450,7 @@ async function showSample(index) {
     const record = payload.record;
     state.index = payload.index;
     state.imageCache = null;
+    clearAiPrediction();
 
     els.sampleIndex.value = String(state.index);
     els.sampleId.value = record.id;
@@ -324,8 +468,7 @@ async function showSample(index) {
 
     setStatus(`Sample ${state.index + 1} · id ${record.id}`);
   } catch (error) {
-    console.error(error);
-    setStatus(`Error: ${error.message}`);
+    reportError("Sample load failed", error.message, error);
   } finally {
     state.loading = false;
     updateNavButtons();
@@ -349,6 +492,7 @@ function setupSplitters() {
   bindRowSplitter(els.splitterRow, els.workspace);
   bindTopColumnSplitter(els.splitterCol, 0);
   bindTopColumnSplitter(els.splitterColOverlay, 1);
+  bindTopColumnSplitter(els.splitterColAi, 2);
   bindBottomColumnSplitter(els.splitterColBottom, els.rowBottom);
 }
 
@@ -381,10 +525,21 @@ function bindTopColumnSplitter(splitter, splitterIndex) {
     const ratio = clamp(x / available, LAYOUT_LIMITS.min, 1 - 2 * LAYOUT_LIMITS.min);
 
     if (splitterIndex === 0) {
-      state.topCol1 = clamp(ratio, LAYOUT_LIMITS.min, state.topCol1 + state.topCol2 - LAYOUT_LIMITS.min);
-    } else {
-      const combined = clamp(ratio, state.topCol1 + LAYOUT_LIMITS.min, 1 - LAYOUT_LIMITS.min);
+      state.topCol1 = clamp(ratio, LAYOUT_LIMITS.min, 1 - 3 * LAYOUT_LIMITS.min);
+    } else if (splitterIndex === 1) {
+      const combined = clamp(
+        ratio,
+        state.topCol1 + LAYOUT_LIMITS.min,
+        1 - 2 * LAYOUT_LIMITS.min,
+      );
       state.topCol2 = combined - state.topCol1;
+    } else {
+      const combined = clamp(
+        ratio,
+        state.topCol1 + state.topCol2 + LAYOUT_LIMITS.min,
+        1 - LAYOUT_LIMITS.min,
+      );
+      state.topCol3 = combined - state.topCol1 - state.topCol2;
     }
 
     normalizeTopColumns();
@@ -460,6 +615,8 @@ async function init() {
     els.datasetPath.textContent = meta.dataset_dir;
     els.sampleIndex.max = Math.max(0, state.total - 1);
     els.sampleCount.textContent = `/ ${state.total.toLocaleString()}`;
+    setModelUi(meta.model);
+    clearAiPrediction();
 
     const config = await fetchJson("/api/config");
     state.configYaml = config.yaml;
@@ -473,8 +630,7 @@ async function init() {
 
     await showSample(0);
   } catch (error) {
-    console.error(error);
-    setStatus(`Failed to initialize: ${error.message}`);
+    reportError("Initialization failed", error.message, error);
   }
 }
 
@@ -527,6 +683,9 @@ document.addEventListener("keydown", (event) => {
   } else if (event.key === "End") {
     event.preventDefault();
     showSample(state.total - 1);
+  } else if (event.key === "p" || event.key === "P") {
+    event.preventDefault();
+    runAiPrediction();
   }
 });
 
@@ -545,6 +704,26 @@ els.btnCopyJson.addEventListener("click", () => {
 
 els.btnCopyConfig.addEventListener("click", () => {
   copyText(state.configYaml, "config.yaml");
+});
+
+els.btnRunAi.addEventListener("click", () => {
+  runAiPrediction();
+});
+
+for (const btn of [els.errorDialogClose, els.errorDialogOk]) {
+  btn.addEventListener("click", hideErrorDialog);
+}
+
+els.errorDialogBackdrop.addEventListener("click", (event) => {
+  if (event.target === els.errorDialogBackdrop) {
+    hideErrorDialog();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !els.errorDialogBackdrop.hidden) {
+    hideErrorDialog();
+  }
 });
 
 window.addEventListener("resize", applyLayout);
