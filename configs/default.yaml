@@ -33,6 +33,7 @@ background:
   # Compositing mode after the splat pass.
   #   solid — flat color everywhere splats do not cover
   #   image — random file from image_dir (requires RNG per sample)
+  #   random_pixels — independent random RGB per pixel (requires RNG per sample)
   mode: "image"
 
   # Directory of background images (.jpg, .png, .webp, …).

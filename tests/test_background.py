@@ -75,3 +75,32 @@ def test_sample_background_layer_solid() -> None:
     bg, meta = sample_background_layer(spec, 16, 16, np.random.default_rng(0))
     assert bg.shape == (16, 16, 3)
     assert meta == {"mode": "solid", "color": [0.25, 0.5, 0.75]}
+
+
+def test_sample_background_layer_random_pixels() -> None:
+    spec = BackgroundSpec(mode="random_pixels")
+    rng = np.random.default_rng(42)
+    bg, meta = sample_background_layer(spec, 8, 8, rng)
+    assert bg.shape == (8, 8, 3)
+    assert meta == {"mode": "random_pixels"}
+    assert bg.min() >= 0.0
+    assert bg.max() <= 1.0
+
+    bg2, _ = sample_background_layer(spec, 8, 8, np.random.default_rng(42))
+    assert torch.allclose(bg, bg2)
+
+
+def test_composite_random_pixels_background() -> None:
+    fg_rgb = torch.zeros(16, 16, 3)
+    fg_rgb[4:12, 4:12, :] = 1.0
+    alpha = torch.zeros(16, 16)
+    alpha[4:12, 4:12] = 1.0
+
+    spec = BackgroundSpec(mode="random_pixels")
+    rng = np.random.default_rng(7)
+    rgb, meta = composite(fg_rgb, alpha, spec, 16, 16, rng=rng)
+
+    assert meta == {"mode": "random_pixels"}
+    assert rgb[8, 8, 0] > 0.9
+    assert rgb[0, 0].min() >= 0.0
+    assert rgb[0, 0].max() <= 1.0
