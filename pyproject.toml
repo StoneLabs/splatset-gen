@@ -22,12 +22,12 @@ package = false
 index-strategy = "unsafe-best-match"
 
 [[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
+torch = { index = "pytorch-cu124" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
