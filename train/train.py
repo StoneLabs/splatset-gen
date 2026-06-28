@@ -211,6 +211,24 @@ def print_status(is_best, saved_bkp, patience, max_patience, gap, lr):
     print(f"  {'  ·  '.join(parts)}\n")
 
 
+def print_best_checkpoint_saved(path, epoch, val_loss, prev_best_val_loss):
+    name = os.path.basename(path)
+    sidecar = checkpoint_config_path(path).name
+    if prev_best_val_loss == float("inf"):
+        val_detail = f"val {val_loss:.6f}  {_DIM}(first best){_R}"
+        action = "saved"
+    else:
+        val_detail = f"val {prev_best_val_loss:.6f} → {val_loss:.6f}"
+        action = "overwrote"
+    print(
+        f"  {_GRN}{_BLD}✦ {action} best checkpoint{_R}"
+        f"  {_DIM}{name}{_R}"
+        f"  ·  epoch {epoch}"
+        f"  ·  {val_detail}"
+        f"  ·  {_DIM}+ {sidecar}{_R}"
+    )
+
+
 def print_confusion(conf):
     """Render the aggregate pixel confusion matrix with row-normalised rates."""
     tp, fp, fn, tn = conf["tp"], conf["fp"], conf["fn"], conf["tn"]
@@ -663,9 +681,11 @@ def main():
         print_val(val_loss, val_agg, val_per_run)
 
         if is_best:
-            best_val_loss    = val_loss
-            patience_counter = 0
+            prev_best_val_loss = best_val_loss
+            best_val_loss      = val_loss
+            patience_counter   = 0
             save_checkpoint(model, optimizer, epoch, best_ckpt, **_checkpoint_kwargs())
+            print_best_checkpoint_saved(best_ckpt, epoch, val_loss, prev_best_val_loss)
         else:
             patience_counter += 1
 
