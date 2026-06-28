@@ -61,12 +61,6 @@ def test_api_model_reload(tmp_path) -> None:
     root = tmp_path / "outputs"
     _write_dataset(root / "run_a")
 
-    training_config = tmp_path / "training_config.yaml"
-    training_config.write_text("device: auto\n", encoding="utf-8")
-
-    app_module = sys.modules["app"]
-    app_module.training_config_path = training_config
-
     app = create_app(root, initial="run_a", checkpoint=tmp_path / "missing.pth")
     client = app.test_client()
 

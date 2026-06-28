@@ -37,7 +37,6 @@ model_checkpoint_override: Path | None = None
 datasets_root: Path | None = None
 dataset_catalog: list[dict] = []
 selected_dataset_name: str | None = None
-training_config_path: Path | None = None
 TRAINING_CONFIG_NOT_FOUND = "training / inference config data not found"
 
 
@@ -214,12 +213,19 @@ def _resolve_checkpoint_path() -> Path | None:
     return ckpt
 
 
+def _apply_training_config_for_checkpoint(checkpoint_path: Path) -> None:
+    config_path = _checkpoint_config_path(checkpoint_path)
+    if config_path.is_file():
+        train_config.cfg = load_training_config(config_path)
+
+
 def load_model_runner() -> None:
     global model_runner
     model_runner = None
     ckpt = _resolve_checkpoint_path()
     if ckpt is None:
         return
+    _apply_training_config_for_checkpoint(ckpt)
     try:
         model_runner = ModelRunner(ckpt)
     except FileNotFoundError as exc:
@@ -227,8 +233,6 @@ def load_model_runner() -> None:
 
 
 def reload_model() -> dict:
-    if training_config_path is not None and training_config_path.is_file():
-        train_config.cfg = load_training_config(training_config_path)
     load_model_runner()
     return _model_meta()
 
@@ -368,7 +372,7 @@ def api_config():
 @app.route("/api/predict/index/<int:sample_index>")
 def api_predict(sample_index: int):
     if model_runner is None:
-        abort(503, description="No model loaded. Pass --model or set inference.checkpoint in training_config.yaml")
+        abort(503, description="No model loaded. Pass --model with a checkpoint (.pth).")
 
     ds = _require_index()
     try:
@@ -484,22 +488,12 @@ def main() -> None:
         "--model",
         type=Path,
         default=None,
-        help="Optional model checkpoint (.pth). Defaults to inference.checkpoint in training_config.yaml",
-    )
-    parser.add_argument(
-        "--training-config",
-        type=Path,
-        default=TRAIN_DIR / "training_config.yaml",
-        help="Path to train/training_config.yaml",
+        help="Model checkpoint (.pth). Defaults to train/checkpoints/best_by_val_loss.pth if present",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
-
-    global training_config_path
-    training_config_path = args.training_config.resolve()
-    train_config.cfg = load_training_config(training_config_path)
 
     try:
         root = resolve_datasets_root(str(args.datasets_dir))
