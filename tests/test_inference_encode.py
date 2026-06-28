@@ -103,8 +103,23 @@ def test_encode_compare_black_has_colored_pixels() -> None:
     )
     assert mode == "RGB"
     assert encoded[0, 0].tolist() == [0, 0, 0]
-    assert encoded.max() == 255
+    assert encoded.max() > 0
     assert np.any((encoded != 0).any(axis=-1))
+
+
+def test_encode_compare_black_alpha_uses_soft_strength() -> None:
+    encoded, mode = ModelRunner.encode_compare_png(
+        ALPHA,
+        GT,
+        output_format="alpha",
+        background="black",
+        threshold=0.5,
+    )
+    assert mode == "RGB"
+    signal = encoded[(encoded != 0).any(axis=-1)]
+    assert signal.size > 0
+    full_tp = np.array([56, 203, 92], dtype=np.uint8)
+    assert np.any(signal != full_tp)
 
 
 def test_encode_compare_transparent_tn_is_clear() -> None:
