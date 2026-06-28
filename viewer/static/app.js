@@ -790,30 +790,33 @@ function fillCompareBlackBackground(data) {
   }
 }
 
-/** Compare map: saturated TP/FP/FN hues, alpha from soft strength (mask) or blended RGB (overlay). */
+/**
+ * Write one compare pixel. Three output conventions:
+ *   binary               — opaque hue at `opacity` (no soft strength).
+ *   black bg (alpha)     — hue premultiplied by strength, alpha=255 (canvas can't
+ *                          blend within putImageData, so composite onto black here).
+ *   transparent/overlay  — hue with alpha=strength; overlay blends toward white for FN.
+ */
 function writeComparePixel(data, offset, pixel, { blackBackground, opacity, overlayStyle = false }) {
   if (pixel.kind === "tn") {
     return;
   }
 
   const [hueR, hueG, hueB] = AI_COMPARE_COLORS[pixel.kind];
-  const binary = state.aiOutputFormat === "binary";
+
+  if (state.aiOutputFormat === "binary") {
+    const alpha = Math.round(255 * opacity);
+    if (alpha > 0) {
+      setCanvasPixel(data, offset, hueR, hueG, hueB, alpha);
+    }
+    return;
+  }
 
   if (blackBackground && !overlayStyle) {
-    if (binary) {
-      const alpha = Math.round(255 * opacity);
-      if (alpha > 0) {
-        setCanvasPixel(data, offset, hueR, hueG, hueB, alpha);
-      }
-      return;
-    }
-
-    const strength = pixel.strength ?? 0;
-    const blend = strength * opacity;
+    const blend = (pixel.strength ?? 0) * opacity;
     if (blend <= 0) {
       return;
     }
-    // putImageData does not blend within the bitmap — composite soft alpha onto black here.
     setCanvasPixel(
       data,
       offset,
@@ -825,14 +828,6 @@ function writeComparePixel(data, offset, pixel, { blackBackground, opacity, over
     return;
   }
 
-  if (binary) {
-    const alpha = Math.round(255 * opacity);
-    if (alpha > 0) {
-      setCanvasPixel(data, offset, hueR, hueG, hueB, alpha);
-    }
-    return;
-  }
-
   const { strength, overlap, fnAmount, fpAmount } = pixel;
   const alpha = Math.round(strength * 255 * opacity);
   if (alpha <= 0) {
@@ -840,9 +835,11 @@ function writeComparePixel(data, offset, pixel, { blackBackground, opacity, over
   }
 
   if (overlayStyle) {
-    const red = Math.min(255, Math.round(fpAmount * 235 + fnAmount * 255));
-    const green = Math.min(255, Math.round(overlap * 203 + fnAmount * 255));
-    const blue = Math.min(255, Math.round(overlap * 92 + fnAmount * 255));
+    const [, tpG, tpB] = AI_COMPARE_COLORS.tp;
+    const [fpR] = AI_COMPARE_COLORS.fp;
+    const red = Math.min(255, Math.round(fpAmount * fpR + fnAmount * 255));
+    const green = Math.min(255, Math.round(overlap * tpG + fnAmount * 255));
+    const blue = Math.min(255, Math.round(overlap * tpB + fnAmount * 255));
     setCanvasPixel(data, offset, red, green, blue, alpha);
     return;
   }
