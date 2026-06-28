@@ -48,8 +48,48 @@ def get_device():
     if torch.backends.mps.is_available():
         return torch.device("mps")
     if torch.cuda.is_available():
-        return torch.device("cuda")
+        return torch.device("cuda:0")
     return torch.device("cpu")
+
+
+def print_device_report(device):
+    """Startup debug: GPUs visible to PyTorch and which device training will use."""
+    print(f"\n{_DIM}{'─' * 56}{_R}")
+    print(f"{_BLD}  device report{_R}")
+    print(f"  PyTorch {_DIM}{torch.__version__}{_R}  ·  CUDA built {_DIM}{torch.backends.cuda.is_built()}{_R}")
+    print(f"  config device {_DIM}{cfg.DEVICE!r}{_R}")
+
+    if torch.backends.mps.is_available():
+        print(f"  MPS available {_GRN}yes{_R}")
+
+    if torch.cuda.is_available():
+        n = torch.cuda.device_count()
+        print(f"  CUDA available {_GRN}yes{_R}  ·  {n} GPU(s)")
+        for i in range(n):
+            props = torch.cuda.get_device_properties(i)
+            mem_gb = props.total_memory / (1024 ** 3)
+            selected = device.type == "cuda" and (device.index in (None, i))
+            tag = f"  {_GRN}{_BLD}← training{_R}" if selected else ""
+            print(f"    [{i}] {props.name}  {mem_gb:.1f} GiB{tag}")
+    else:
+        print(f"  CUDA available {_RED}no{_R}")
+        if not torch.backends.cuda.is_built():
+            print(f"  {_YLW}hint: install CUDA-enabled PyTorch (see pyproject.toml){_R}")
+
+    if device.type == "cpu":
+        if cfg.DEVICE != "auto":
+            reason = f"device={cfg.DEVICE!r} in config"
+        elif torch.backends.mps.is_available():
+            reason = "unexpected — MPS should have been selected"
+        else:
+            reason = "no CUDA GPU visible to PyTorch"
+        print(f"  {_RED}{_BLD}training on CPU{_R}  {_DIM}({reason}){_R}")
+    elif device.type == "cuda":
+        name = torch.cuda.get_device_name(device)
+        print(f"  {_GRN}{_BLD}training on {device}{_R}  {_DIM}({name}){_R}")
+    else:
+        print(f"  {_GRN}{_BLD}training on {device}{_R}")
+    print(f"{_DIM}{'─' * 56}{_R}\n")
 
 
 def _amp_ctx(device):
@@ -427,6 +467,7 @@ def main():
     random.seed(cfg.SEED)
     torch.manual_seed(cfg.SEED)
     device = get_device()
+    print_device_report(device)
 
     if args.restart:
         _reset_training_artifacts()
