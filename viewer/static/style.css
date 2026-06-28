@@ -327,6 +327,36 @@ h2 {
   display: none !important;
 }
 
+.panel-float-labeled-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 0.72rem;
+  color: var(--muted);
+  backdrop-filter: blur(6px);
+}
+
+.panel-float-labeled-control[hidden] {
+  display: none !important;
+}
+
+.panel-float-label {
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.panel-float-labeled-control .panel-segmented {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  padding: 0;
+}
+
 .panel-float-opacity input[type="range"] {
   width: 5.5rem;
   accent-color: #ff4d4f;

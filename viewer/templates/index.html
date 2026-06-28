@@ -136,6 +136,13 @@
                 <input id="ai-mask-opacity" type="range" min="0" max="100" value="50" />
                 <span id="ai-mask-opacity-label">50%</span>
               </label>
+              <div class="panel-float-labeled-control" id="ai-mask-bg-controls" hidden>
+                <span class="panel-float-label">Background:</span>
+                <div class="panel-segmented" role="group" aria-label="Mask background">
+                  <button type="button" class="active" data-ai-mask-bg="transparent">Clear</button>
+                  <button type="button" data-ai-mask-bg="black">Black</button>
+                </div>
+              </div>
             </div>
             <div class="panel-viewport" data-zoom-panel="ai">
               <div class="panel-viewport-content" data-zoom-content="ai">

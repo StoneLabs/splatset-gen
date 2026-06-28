@@ -15,6 +15,7 @@ const STORAGE_KEYS = {
   aiComposeMode: "viewer-ai-compose-mode",
   aiMaskOpacity: "viewer-ai-mask-opacity",
   aiAutoRun: "viewer-ai-auto-run",
+  aiMaskBlackBackground: "viewer-ai-mask-black-bg",
 };
 
 const LAYOUT_LIMITS = {
@@ -59,6 +60,7 @@ const state = {
   aiComposeMode: "mask",
   aiMaskOpacity: 0.5,
   aiMaskThreshold: 0.5,
+  aiMaskBlackBackground: false,
   aiMetrics: null,
   imageCache: null,
   selectedDataset: null,
@@ -105,6 +107,8 @@ const els = {
   aiComposeButtons: [...document.querySelectorAll("[data-ai-compose]")],
   aiComposeControls: document.getElementById("ai-compose-controls"),
   aiOverlayOpacity: document.getElementById("ai-overlay-opacity"),
+  aiMaskBgControls: document.getElementById("ai-mask-bg-controls"),
+  aiMaskBgButtons: [...document.querySelectorAll("[data-ai-mask-bg]")],
   aiMaskOpacity: document.getElementById("ai-mask-opacity"),
   aiMaskOpacityLabel: document.getElementById("ai-mask-opacity-label"),
   maskOpacity: document.getElementById("mask-opacity"),
@@ -313,6 +317,7 @@ function saveLayoutPrefs() {
 const AI_FORMATS = new Set(["alpha", "binary"]);
 const AI_DISPLAY_MODES = new Set(["raw", "compare"]);
 const AI_COMPOSE_MODES = new Set(["mask", "overlay", "split"]);
+const AI_MASK_BACKGROUNDS = new Set(["transparent", "black"]);
 
 function loadAiPrefs() {
   const outputFormat = localStorage.getItem(STORAGE_KEYS.aiOutputFormat);
@@ -320,6 +325,7 @@ function loadAiPrefs() {
   const composeMode = localStorage.getItem(STORAGE_KEYS.aiComposeMode);
   const maskOpacity = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.aiMaskOpacity));
   const autoRun = localStorage.getItem(STORAGE_KEYS.aiAutoRun);
+  const maskBlackBg = localStorage.getItem(STORAGE_KEYS.aiMaskBlackBackground);
 
   if (AI_FORMATS.has(outputFormat)) {
     state.aiOutputFormat = outputFormat;
@@ -336,6 +342,9 @@ function loadAiPrefs() {
   if (autoRun !== null) {
     state.aiAutoRun = autoRun === "true";
   }
+  if (AI_MASK_BACKGROUNDS.has(maskBlackBg)) {
+    state.aiMaskBlackBackground = maskBlackBg === "black";
+  }
 }
 
 function saveAiPrefs() {
@@ -344,6 +353,10 @@ function saveAiPrefs() {
   localStorage.setItem(STORAGE_KEYS.aiComposeMode, state.aiComposeMode);
   localStorage.setItem(STORAGE_KEYS.aiMaskOpacity, String(state.aiMaskOpacity));
   localStorage.setItem(STORAGE_KEYS.aiAutoRun, String(state.aiAutoRun));
+  localStorage.setItem(
+    STORAGE_KEYS.aiMaskBlackBackground,
+    state.aiMaskBlackBackground ? "black" : "transparent",
+  );
 }
 
 function applyLayout() {
@@ -609,18 +622,38 @@ function updateAiMetricsUi() {
   els.aiMetricsBar.hidden = false;
 }
 
-function readGrayscaleFromImage(img) {
+function imageDataUsesAlphaChannel(pixels) {
+  for (let i = 3; i < pixels.length; i += 4) {
+    if (pixels[i] !== 255) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function maskWeightFromPixel(pixels, pixelIndex, useAlphaChannel) {
+  const offset = pixelIndex * 4;
+  const value = useAlphaChannel ? pixels[offset + 3] : pixels[offset];
+  return value / 255;
+}
+
+function readAlphaFromImage(img) {
   const canvas = document.createElement("canvas");
   canvas.width = img.naturalWidth;
   canvas.height = img.naturalHeight;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(img, 0, 0);
   const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const useAlphaChannel = imageDataUsesAlphaChannel(pixels);
   const gray = new Uint8Array(canvas.width * canvas.height);
   for (let i = 0; i < gray.length; i += 1) {
-    gray[i] = pixels[i * 4];
+    gray[i] = useAlphaChannel ? pixels[i * 4 + 3] : pixels[i * 4];
   }
   return gray;
+}
+
+function readGrayscaleFromImage(img) {
+  return readAlphaFromImage(img);
 }
 
 function updateAiControlUi() {
@@ -649,6 +682,16 @@ function updateAiControlUi() {
   const showAiOverlayOpacity =
     hasPrediction && (state.aiComposeMode === "overlay" || state.aiComposeMode === "split");
   els.aiOverlayOpacity.hidden = !showAiOverlayOpacity;
+
+  const showMaskBackgroundToggle =
+    hasPrediction && state.aiComposeMode !== "overlay";
+  els.aiMaskBgControls.hidden = !showMaskBackgroundToggle;
+  for (const button of els.aiMaskBgButtons) {
+    const active =
+      button.dataset.aiMaskBg === (state.aiMaskBlackBackground ? "black" : "transparent");
+    button.classList.toggle("active", active);
+    button.disabled = !hasPrediction;
+  }
 }
 
 function updateGtControlUi() {
@@ -689,13 +732,15 @@ function thresholdMaskCanvas(sourceImage, threshold) {
   const ctx = canvas.getContext("2d");
   ctx.drawImage(sourceImage, 0, 0);
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const useAlphaChannel = imageDataUsesAlphaChannel(imageData.data);
   const cutoff = Math.round(threshold * 255);
   for (let i = 0; i < imageData.data.length; i += 4) {
-    const value = imageData.data[i] > cutoff ? 255 : 0;
-    imageData.data[i] = value;
-    imageData.data[i + 1] = value;
-    imageData.data[i + 2] = value;
-    imageData.data[i + 3] = 255;
+    const value = useAlphaChannel ? imageData.data[i + 3] : imageData.data[i];
+    const on = value > cutoff ? 255 : 0;
+    imageData.data[i] = on;
+    imageData.data[i + 1] = on;
+    imageData.data[i + 2] = on;
+    imageData.data[i + 3] = on ? 255 : 0;
   }
   ctx.putImageData(imageData, 0, 0);
   return canvas;
@@ -709,6 +754,40 @@ function getAiMaskSource() {
     return state.aiAlphaImage;
   }
   return thresholdMaskCanvas(state.aiAlphaImage, state.aiMaskThreshold);
+}
+
+function renderAiMaskOnCanvas(canvas, maskSource, { blackBackground = false } = {}) {
+  const width = maskSource.naturalWidth || maskSource.width;
+  const height = maskSource.naturalHeight || maskSource.height;
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+
+  if (!blackBackground) {
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(maskSource, 0, 0);
+    return;
+  }
+
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, width, height);
+
+  const sample = document.createElement("canvas");
+  sample.width = width;
+  sample.height = height;
+  sample.getContext("2d").drawImage(maskSource, 0, 0);
+  const pixels = sample.getContext("2d").getImageData(0, 0, width, height);
+  const useAlphaChannel = imageDataUsesAlphaChannel(pixels.data);
+  const out = ctx.createImageData(width, height);
+  for (let i = 0; i < width * height; i += 1) {
+    const offset = i * 4;
+    const value = useAlphaChannel ? pixels.data[offset + 3] : pixels.data[offset];
+    out.data[offset] = value;
+    out.data[offset + 1] = value;
+    out.data[offset + 2] = value;
+    out.data[offset + 3] = 255;
+  }
+  ctx.putImageData(out, 0, 0);
 }
 
 function setGtContentVisibility(mode) {
@@ -740,10 +819,11 @@ function renderMaskOverlayOnCanvas(canvas, rgbImage, maskImage, opacity) {
 
   const maskPixels = maskCtx.getImageData(0, 0, width, height);
   const overlayPixels = maskCtx.createImageData(width, height);
+  const useAlphaChannel = imageDataUsesAlphaChannel(maskPixels.data);
   const alphaScale = opacity * 255;
 
   for (let i = 0; i < maskPixels.data.length; i += 4) {
-    const maskValue = maskPixels.data[i] / 255;
+    const maskValue = maskWeightFromPixel(maskPixels.data, i / 4, useAlphaChannel);
     if (maskValue <= 0) {
       continue;
     }
@@ -787,16 +867,14 @@ function renderAiOverlayView() {
 }
 
 function renderAiBinaryView() {
-  const img = state.aiAlphaImage;
-  if (!img) {
+  const maskSource = getAiMaskSource();
+  if (!maskSource) {
     return;
   }
 
-  const canvas = els.aiPredictionCanvas;
-  const thresholded = thresholdMaskCanvas(img, state.aiMaskThreshold);
-  canvas.width = thresholded.width;
-  canvas.height = thresholded.height;
-  canvas.getContext("2d").drawImage(thresholded, 0, 0);
+  renderAiMaskOnCanvas(els.aiPredictionCanvas, maskSource, {
+    blackBackground: state.aiMaskBlackBackground,
+  });
 }
 
 function renderAiSplitView() {
@@ -807,7 +885,9 @@ function renderAiSplitView() {
   }
 
   const maskPreviewCanvas = document.createElement("canvas");
-  renderMaskOverlayOnCanvas(maskPreviewCanvas, rgbImage, maskSource, 1);
+  renderAiMaskOnCanvas(maskPreviewCanvas, maskSource, {
+    blackBackground: state.aiMaskBlackBackground,
+  });
   const overlayCanvas = document.createElement("canvas");
   renderMaskOverlayOnCanvas(overlayCanvas, rgbImage, maskSource, state.aiMaskOpacity);
   renderSideBySideCanvas(els.aiPredictionCanvas, maskPreviewCanvas, overlayCanvas);
@@ -827,39 +907,52 @@ function setComparePixel(imageData, offset, red, green, blue, alpha = 255) {
   imageData.data[offset + 3] = alpha;
 }
 
-function renderBinaryComparePixel(imageData, offset, predObject, gtObject, forOverlay = false) {
+function renderBinaryComparePixel(
+  imageData,
+  offset,
+  predObject,
+  gtObject,
+  overlayOpacity = 1,
+) {
+  const alpha = Math.round(255 * overlayOpacity);
   if (predObject && gtObject) {
-    setComparePixel(imageData, offset, 56, 203, 92);
+    setComparePixel(imageData, offset, 56, 203, 92, alpha);
   } else if (!predObject && !gtObject) {
-    if (!forOverlay) {
-      setComparePixel(imageData, offset, 0, 0, 0);
-    }
+    return;
   } else if (!predObject && gtObject) {
-    setComparePixel(imageData, offset, 255, 255, 255);
+    setComparePixel(imageData, offset, 255, 255, 255, alpha);
   } else {
-    setComparePixel(imageData, offset, 235, 64, 64);
+    setComparePixel(imageData, offset, 235, 64, 64, alpha);
   }
 }
 
-function renderAlphaComparePixel(imageData, offset, predA, gtA, forOverlay = false) {
+function renderAlphaComparePixel(
+  imageData,
+  offset,
+  predA,
+  gtA,
+  overlayOpacity = 1,
+) {
   const overlap = Math.min(predA, gtA);
   const fnAmount = Math.max(0, gtA - predA);
   const fpAmount = Math.max(0, predA - gtA);
+  const strength = Math.max(overlap, fnAmount, fpAmount);
 
-  if (overlap < 0.01 && fnAmount < 0.01 && fpAmount < 0.01) {
-    if (!forOverlay) {
-      setComparePixel(imageData, offset, 0, 0, 0);
-    }
+  if (strength < 0.01) {
     return;
   }
 
   const red = Math.min(255, Math.round(fpAmount * 235 + fnAmount * 255));
   const green = Math.min(255, Math.round(overlap * 203 + fnAmount * 255));
   const blue = Math.min(255, Math.round(overlap * 92 + fnAmount * 255));
-  setComparePixel(imageData, offset, red, green, blue);
+  const alpha = Math.round(strength * 255 * overlayOpacity);
+  if (alpha <= 0) {
+    return;
+  }
+  setComparePixel(imageData, offset, red, green, blue, alpha);
 }
 
-function renderCompareMapOnCanvas(canvas, { forOverlay = false } = {}) {
+function renderCompareMapOnCanvas(canvas, { overlayOpacity = 1, blackBackground = false } = {}) {
   const predImg = state.aiAlphaImage;
   const gtImg = state.imageCache?.maskImage;
   if (!predImg || !gtImg) {
@@ -886,7 +979,7 @@ function renderCompareMapOnCanvas(canvas, { forOverlay = false } = {}) {
         offset,
         predGray[i] > cutoff,
         gtGray[i] > cutoff,
-        forOverlay,
+        overlayOpacity,
       );
     } else {
       renderAlphaComparePixel(
@@ -894,17 +987,26 @@ function renderCompareMapOnCanvas(canvas, { forOverlay = false } = {}) {
         offset,
         predGray[i] / 255,
         gtGray[i] / 255,
-        forOverlay,
+        overlayOpacity,
       );
     }
   }
 
+  if (blackBackground) {
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, width, height);
+  } else {
+    ctx.clearRect(0, 0, width, height);
+  }
   ctx.putImageData(imageData, 0, 0);
   return canvas;
 }
 
 function renderAiCompareView() {
-  renderCompareMapOnCanvas(els.aiPredictionCanvas);
+  renderCompareMapOnCanvas(els.aiPredictionCanvas, {
+    overlayOpacity: 1,
+    blackBackground: state.aiMaskBlackBackground,
+  });
 }
 
 function renderAiCompareOverlayView() {
@@ -914,7 +1016,7 @@ function renderAiCompareOverlayView() {
   }
 
   const compareCanvas = document.createElement("canvas");
-  if (!renderCompareMapOnCanvas(compareCanvas, { forOverlay: true })) {
+  if (!renderCompareMapOnCanvas(compareCanvas, { overlayOpacity: state.aiMaskOpacity })) {
     return;
   }
 
@@ -924,9 +1026,7 @@ function renderAiCompareOverlayView() {
   canvas.height = rgbImage.naturalHeight;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(rgbImage, 0, 0);
-  ctx.globalAlpha = state.aiMaskOpacity;
   ctx.drawImage(compareCanvas, 0, 0);
-  ctx.globalAlpha = 1;
 }
 
 function renderAiCompareSplitView() {
@@ -936,12 +1036,15 @@ function renderAiCompareSplitView() {
   }
 
   const compareCanvas = document.createElement("canvas");
-  if (!renderCompareMapOnCanvas(compareCanvas)) {
+  if (!renderCompareMapOnCanvas(compareCanvas, {
+    overlayOpacity: 1,
+    blackBackground: state.aiMaskBlackBackground,
+  })) {
     return;
   }
 
   const overlayCompareCanvas = document.createElement("canvas");
-  if (!renderCompareMapOnCanvas(overlayCompareCanvas, { forOverlay: true })) {
+  if (!renderCompareMapOnCanvas(overlayCompareCanvas, { overlayOpacity: state.aiMaskOpacity })) {
     return;
   }
 
@@ -950,9 +1053,7 @@ function renderAiCompareSplitView() {
   overlayCanvas.height = rgbImage.naturalHeight;
   const ctx = overlayCanvas.getContext("2d");
   ctx.drawImage(rgbImage, 0, 0);
-  ctx.globalAlpha = state.aiMaskOpacity;
   ctx.drawImage(overlayCompareCanvas, 0, 0);
-  ctx.globalAlpha = 1;
 
   renderSideBySideCanvas(els.aiPredictionCanvas, compareCanvas, overlayCanvas);
 }
@@ -991,7 +1092,12 @@ function renderAiPanelView() {
   }
 
   if (state.aiOutputFormat === "alpha") {
-    setAiContentVisibility({ showImage: true, showCanvas: false });
+    if (state.aiMaskBlackBackground) {
+      renderAiMaskOnCanvas(els.aiPredictionCanvas, state.aiAlphaImage, { blackBackground: true });
+      setAiContentVisibility({ showImage: false, showCanvas: true });
+    } else {
+      setAiContentVisibility({ showImage: true, showCanvas: false });
+    }
     return;
   }
 
@@ -1615,6 +1721,17 @@ for (const button of els.aiComposeButtons) {
       return;
     }
     state.aiComposeMode = button.dataset.aiCompose;
+    saveAiPrefs();
+    renderAiPanelView();
+  });
+}
+
+for (const button of els.aiMaskBgButtons) {
+  button.addEventListener("click", () => {
+    if (!state.aiAlphaImage) {
+      return;
+    }
+    state.aiMaskBlackBackground = button.dataset.aiMaskBg === "black";
     saveAiPrefs();
     renderAiPanelView();
   });

@@ -75,6 +75,40 @@ class ModelRunner:
         alpha = torch.sigmoid(logits)[0, 0].float().cpu().numpy()
         return (alpha * 255.0).astype(np.uint8)
 
+    @staticmethod
+    def alpha_u8_to_rgba(alpha: np.ndarray) -> np.ndarray:
+        """Pack soft alpha into RGBA PNG (white RGB, alpha = model confidence)."""
+        return ModelRunner.encode_alpha_png(alpha, background="transparent")
+
+    @staticmethod
+    def encode_alpha_png(
+        alpha: np.ndarray,
+        *,
+        background: str = "transparent",
+    ) -> np.ndarray:
+        """Encode alpha mask for PNG export.
+
+        ``transparent``: RGBA with white RGB and alpha = confidence (clear background).
+        ``black``: grayscale L with white foreground on black (legacy mask PNG style).
+        """
+        if alpha.ndim != 2:
+            raise ValueError(f"expected HxW alpha, got shape {alpha.shape}")
+        alpha_u8 = alpha.astype(np.uint8, copy=False)
+        if background == "black":
+            return alpha_u8
+        if background != "transparent":
+            raise ValueError(f"Unknown alpha background {background!r}; use transparent or black")
+        rgba = np.empty((*alpha_u8.shape, 4), dtype=np.uint8)
+        rgba[..., 0] = 255
+        rgba[..., 1] = 255
+        rgba[..., 2] = 255
+        rgba[..., 3] = alpha_u8
+        return rgba
+
+    @staticmethod
+    def alpha_png_mode(background: str) -> str:
+        return "L" if background == "black" else "RGBA"
+
     @torch.no_grad()
     def predict_mask(self, image_path: Path | str, point: list[int] | tuple[int, int]) -> np.ndarray:
         """Return binarized mask as uint8 0/255 (thresholded alpha)."""
