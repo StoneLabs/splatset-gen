@@ -5,8 +5,10 @@ Examples:
   uv run scripts/plot_training_log.py train/logs/training_log.csv
   uv run scripts/plot_training_log.py train/logs/training_log.csv -o out/plots
   uv run scripts/plot_training_log.py train/logs/training_log.csv --no-show
+  uv run scripts/plot_training_log.py train/logs/training_log.csv -f
 
 Opens a local Flask HTML gallery when --show is used. Also writes index.html beside the PNGs.
+With -f/--follow, watches the log and regenerates plots; press F5 in the browser to refresh.
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ import csv
 import html
 import math
 import socket
+import threading
+import time
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +54,8 @@ SECTION_LAYOUT: dict[str, dict[str, int]] = {
     "Per-dataset loss": {"cols": 2},
     "Per-dataset metrics": {"cols": 2},
 }
+
+_REGEN_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -136,7 +142,11 @@ def _extend_header_for_trailing_fields(
     return extended
 
 
-def _load_log(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+def _load_log(
+    path: Path,
+    *,
+    quiet: bool = False,
+) -> tuple[list[str], list[dict[str, str]]]:
     known_runs = _discover_dataset_runs()
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.reader(handle)
@@ -162,7 +172,7 @@ def _load_log(path: Path) -> tuple[list[str], list[dict[str, str]]]:
             max_width,
             known_runs=known_runs,
         )
-        if len(columns) > len(header):
+        if len(columns) > len(header) and not quiet:
             added = [column for column in columns if column not in header]
             typer.echo(
                 f"Recovered {len(added)} column(s) for dataset(s) added mid-run: "
@@ -499,7 +509,9 @@ def _build_gallery_html(
     log_path: Path,
     *,
     image_prefix: str = "images",
+    version: int | None = None,
 ) -> str:
+    cache_suffix = f"?v={version}" if version is not None else ""
     page_title = f"Training log — {log_path.name}"
     parts = [
         "<!DOCTYPE html>",
@@ -524,7 +536,7 @@ def _build_gallery_html(
         parts.append(f"<h2>{html.escape(section.title)}</h2>")
         parts.append(f'<div class="grid {grid_class}">')
         for panel in section.panels:
-            src = f"{image_prefix}/{panel.filename}"
+            src = f"{image_prefix}/{panel.filename}{cache_suffix}"
             parts.append("<figure>")
             parts.append(
                 f'<img src="{html.escape(src, quote=True)}" '
@@ -543,13 +555,96 @@ def _write_gallery_html(
     sections: list[PanelSection],
     log_path: Path,
     out_dir: Path,
+    *,
+    version: int | None = None,
 ) -> Path:
     html_path = out_dir / "index.html"
     html_path.write_text(
-        _build_gallery_html(sections, log_path, image_prefix="."),
+        _build_gallery_html(sections, log_path, image_prefix=".", version=version),
         encoding="utf-8",
     )
     return html_path
+
+
+def _gallery_version(log_path: Path) -> int:
+    return log_path.stat().st_mtime_ns
+
+
+def _regenerate_gallery(
+    log_path: Path,
+    out_dir: Path,
+    *,
+    quiet: bool = False,
+) -> tuple[list[PanelSection], int] | None:
+    with _REGEN_LOCK:
+        try:
+            columns, rows = _load_log(log_path, quiet=quiet)
+            sections = _build_panel_sections(columns, rows)
+            panels = _all_panels(sections)
+            if not panels:
+                return None
+            version = _gallery_version(log_path)
+            saved = _save_panels(panels, out_dir)
+            html_path = _write_gallery_html(sections, log_path, out_dir, version=version)
+            if quiet:
+                typer.echo(f"Updated gallery — {len(rows)} epoch(s); refresh browser (F5)")
+            else:
+                typer.echo(f"Saved {len(saved)} plot(s) to {out_dir}:")
+                for path in saved:
+                    typer.echo(f"  {path}")
+                typer.echo(f"  {html_path}")
+            return sections, version
+        except typer.BadParameter as exc:
+            if quiet:
+                typer.echo(f"Skip update — {exc}", err=True)
+                return None
+            raise
+
+
+def _regenerate_into_state(
+    log_path: Path,
+    out_dir: Path,
+    state: dict[str, object],
+    *,
+    quiet: bool,
+) -> bool:
+    result = _regenerate_gallery(log_path, out_dir, quiet=quiet)
+    if result is None:
+        return False
+    sections, version = result
+    state["sections"] = sections
+    state["version"] = version
+    return True
+
+
+def _follow_log(
+    log_path: Path,
+    out_dir: Path,
+    stop_event: threading.Event,
+    state: dict[str, object] | None = None,
+) -> None:
+    last_key: tuple[int, int] | None = None
+    if log_path.is_file():
+        stat = log_path.stat()
+        last_key = (stat.st_mtime_ns, stat.st_size)
+    typer.echo(f"Following {log_path} (Ctrl+C to stop)")
+
+    while not stop_event.is_set():
+        if not log_path.is_file():
+            stop_event.wait(1.0)
+            continue
+
+        stat = log_path.stat()
+        key = (stat.st_mtime_ns, stat.st_size)
+        if key != last_key:
+            if state is None:
+                ok = _regenerate_gallery(log_path, out_dir, quiet=True) is not None
+            else:
+                ok = _regenerate_into_state(log_path, out_dir, state, quiet=True)
+            if ok:
+                last_key = key
+
+        stop_event.wait(1.0)
 
 
 def _pick_free_port() -> int:
@@ -559,27 +654,56 @@ def _pick_free_port() -> int:
 
 
 def _open_html_gallery(
-    sections: list[PanelSection],
     log_path: Path,
     out_dir: Path,
+    *,
+    follow: bool = False,
+    initial_sections: list[PanelSection] | None = None,
+    initial_version: int | None = None,
 ) -> None:
-    html_path = _write_gallery_html(sections, log_path, out_dir)
-
     port = _pick_free_port()
     url = f"http://127.0.0.1:{port}/"
     typer.echo(f"Gallery server: {url} (Ctrl+C to stop)")
+    if follow:
+        typer.echo("Follow mode — plots regenerate when the log changes; press F5 to refresh")
+
+    state: dict[str, object] = {
+        "sections": initial_sections or [],
+        "version": initial_version,
+    }
     gallery = Flask(__name__)
+    stop_event = threading.Event()
 
     @gallery.get("/")
     def index() -> str:
-        return _build_gallery_html(sections, log_path, image_prefix="/images")
+        sections = state["sections"]
+        if not sections:
+            return _build_gallery_html([], log_path, image_prefix="/images")
+        version = state.get("version")
+        return _build_gallery_html(
+            sections,
+            log_path,
+            image_prefix="/images",
+            version=version if isinstance(version, int) else None,
+        )
 
     @gallery.get("/images/<path:filename>")
     def image(filename: str):
         return send_from_directory(out_dir, filename)
 
+    if follow:
+        watcher = threading.Thread(
+            target=_follow_log,
+            args=(log_path, out_dir, stop_event, state),
+            daemon=True,
+        )
+        watcher.start()
+
     webbrowser.open(url)
-    gallery.run(host="127.0.0.1", port=port, debug=False, use_reloader=False)
+    try:
+        gallery.run(host="127.0.0.1", port=port, debug=False, use_reloader=False)
+    finally:
+        stop_event.set()
 
 
 @app.command()
@@ -600,32 +724,51 @@ def main(
         bool,
         typer.Option("--show/--no-show", help="Open HTML gallery in browser"),
     ] = True,
+    follow: Annotated[
+        bool,
+        typer.Option(
+            "-f",
+            "--follow",
+            help="Watch log file and regenerate plots (F5 in browser to refresh)",
+        ),
+    ] = False,
 ) -> None:
     """Plot losses, learning rate, and metrics from a training log CSV."""
     log_path = _resolve_path(log_file)
-    if not log_path.is_file():
-        raise typer.BadParameter(f"Log file not found: {log_path}")
-
-    columns, rows = _load_log(log_path)
-    sections = _build_panel_sections(columns, rows)
-    panels = _all_panels(sections)
-    if not panels:
-        raise typer.BadParameter(f"No plottable numeric columns found in {log_path}")
 
     if output_dir is None:
         out_dir = log_path.parent / "plots" / log_path.stem
     else:
         out_dir = _resolve_path(output_dir)
 
-    saved = _save_panels(panels, out_dir)
-    html_path = _write_gallery_html(sections, log_path, out_dir)
-    typer.echo(f"Saved {len(saved)} plot(s) to {out_dir}:")
-    for path in saved:
-        typer.echo(f"  {path}")
-    typer.echo(f"  {html_path}")
+    if follow and not log_path.is_file():
+        typer.echo(f"Waiting for log file: {log_path}")
+        while not log_path.is_file():
+            time.sleep(0.5)
+    elif not log_path.is_file():
+        raise typer.BadParameter(f"Log file not found: {log_path}")
+
+    result = _regenerate_gallery(log_path, out_dir, quiet=False)
+    if result is None:
+        raise typer.BadParameter(f"No plottable numeric columns found in {log_path}")
+    sections, version = result
+
+    if follow and not show:
+        stop_event = threading.Event()
+        try:
+            _follow_log(log_path, out_dir, stop_event)
+        except KeyboardInterrupt:
+            stop_event.set()
+        return
 
     if show:
-        _open_html_gallery(sections, log_path, out_dir)
+        _open_html_gallery(
+            log_path,
+            out_dir,
+            follow=follow,
+            initial_sections=sections,
+            initial_version=version,
+        )
 
 
 if __name__ == "__main__":
