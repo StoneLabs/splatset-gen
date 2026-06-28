@@ -108,7 +108,15 @@
         <section class="panel" aria-label="AI predicted mask">
           <header>
             <h2>AI Prediction</h2>
-            <span id="ai-model-label" class="chip muted-chip">no model</span>
+            <button
+              id="ai-model-label"
+              type="button"
+              class="chip chip-button muted-chip"
+              disabled
+              title="Show checkpoint metadata"
+            >
+              no model
+            </button>
           </header>
           <div class="panel-body image-panel fit-mode" id="ai-panel">
             <button
@@ -189,10 +197,9 @@
           tabindex="0"
         ></div>
 
-        <section class="panel" aria-label="Generation config">
+        <section class="panel" aria-label="Dataset creation config">
           <header>
-            <h2>config.yaml</h2>
-            <span class="chip muted-chip">generation</span>
+            <h2>dataset creation config</h2>
             <button id="btn-copy-config" type="button" class="ghost">Copy</button>
           </header>
           <div class="panel-body code-panel">
@@ -205,15 +212,13 @@
           id="splitter-col-bottom-2"
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize generation and training config columns"
+          aria-label="Resize dataset creation and training config columns"
           tabindex="0"
-          hidden
         ></div>
 
-        <section class="panel" id="training-config-panel" aria-label="Training config" hidden>
+        <section class="panel" id="training-config-panel" aria-label="Training / inference config">
           <header>
-            <h2>training_config.yaml</h2>
-            <span class="chip muted-chip">inference</span>
+            <h2>training / inference config</h2>
             <button id="btn-copy-training-config" type="button" class="ghost">Copy</button>
           </header>
           <div class="panel-body code-panel">

@@ -37,6 +37,24 @@ def resolve_device(device: str | None = None) -> torch.device:
     return torch.device("cpu")
 
 
+def meta_from_checkpoint(ckpt: dict, checkpoint_path: Path, device: torch.device) -> dict:
+    meta: dict = {
+        "checkpoint": str(checkpoint_path),
+        "epoch": int(ckpt.get("epoch", 0)),
+        "device": str(device),
+        "has_optimizer": "optimizer" in ckpt,
+        "has_scheduler": "scheduler" in ckpt,
+        "has_scaler": "scaler" in ckpt,
+    }
+    training_state = ckpt.get("training_state")
+    if isinstance(training_state, dict):
+        meta["training_state"] = {
+            key: float(value) if isinstance(value, (int, float)) else value
+            for key, value in training_state.items()
+        }
+    return meta
+
+
 def load_model(checkpoint_path: Path | str, device: torch.device | None = None) -> tuple[PointConditionedUNet, dict]:
     path = Path(checkpoint_path).expanduser().resolve()
     if not path.is_file():
@@ -47,11 +65,7 @@ def load_model(checkpoint_path: Path | str, device: torch.device | None = None) 
     ckpt = torch.load(path, map_location=dev, weights_only=True)
     model.load_state_dict(ckpt["model"])
     model.eval()
-    meta = {
-        "checkpoint": str(path),
-        "epoch": int(ckpt.get("epoch", 0)),
-        "device": str(dev),
-    }
+    meta = meta_from_checkpoint(ckpt, path, dev)
     return model, meta
 
 

@@ -65,6 +65,10 @@ def test_save_and_load_resume_checkpoint(tmp_path, monkeypatch) -> None:
         training_state=training_state,
     )
 
+    sidecar = train_mod.checkpoint_config_path(path)
+    assert sidecar.is_file()
+    assert sidecar.read_text(encoding="utf-8") == Path(cfg.CONFIG_PATH).read_text(encoding="utf-8")
+
     model2 = train_mod.PointConditionedUNet(base_ch=8)
     optimizer2 = torch.optim.AdamW(model2.parameters(), lr=1e-3)
     epoch, loaded_state, scheduler_state = train_mod.load_resume_checkpoint(

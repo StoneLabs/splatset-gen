@@ -53,6 +53,7 @@ const state = {
   maskOpacity: 0.5,
   gtViewMode: "mask",
   modelLoaded: false,
+  modelMetadata: null,
   aiPredictionUrl: null,
   aiAlphaImage: null,
   aiOutputFormat: "alpha",
@@ -450,21 +451,12 @@ async function readErrorResponse(response) {
 }
 
 function updateTrainingConfigUi(meta) {
-  const tc = meta.training_config;
-  state.hasTrainingConfig = Boolean(tc?.yaml);
-  if (!state.hasTrainingConfig) {
-    els.trainingConfigPanel.hidden = true;
-    els.splitterColBottom2.hidden = true;
-    state.trainingConfigYaml = "";
-    els.trainingConfigYaml.textContent = "";
-    applyLayout();
-    return;
-  }
-
+  const tc = meta.training_config ?? {};
+  state.hasTrainingConfig = true;
   els.trainingConfigPanel.hidden = false;
   els.splitterColBottom2.hidden = false;
-  state.trainingConfigYaml = tc.yaml;
-  els.trainingConfigYaml.textContent = tc.yaml;
+  state.trainingConfigYaml = tc.yaml ?? "training / inference config data not found";
+  els.trainingConfigYaml.textContent = state.trainingConfigYaml;
   applyLayout();
 }
 
@@ -1190,8 +1182,35 @@ function clearAiPrediction() {
   renderAiPanelView();
 }
 
+function formatModelMetadata(metadata, threshold) {
+  if (!metadata) {
+    return "No checkpoint metadata available.";
+  }
+
+  const lines = [
+    `checkpoint: ${metadata.checkpoint ?? "—"}`,
+    `epoch: ${metadata.epoch ?? "—"}`,
+    `device: ${metadata.device ?? "—"}`,
+    `mask threshold: ${typeof threshold === "number" ? threshold : "—"}`,
+    `has optimizer state: ${metadata.has_optimizer ? "yes" : "no"}`,
+    `has scheduler state: ${metadata.has_scheduler ? "yes" : "no"}`,
+    `has scaler state: ${metadata.has_scaler ? "yes" : "no"}`,
+  ];
+
+  const trainingState = metadata.training_state;
+  if (trainingState && typeof trainingState === "object") {
+    lines.push("", "training_state:");
+    for (const [key, value] of Object.entries(trainingState)) {
+      lines.push(`  ${key}: ${value}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function setModelUi(model) {
   state.modelLoaded = Boolean(model?.loaded);
+  state.modelMetadata = model?.metadata ?? null;
   if (typeof model?.threshold === "number") {
     state.aiMaskThreshold = model.threshold;
   }
@@ -1199,9 +1218,11 @@ function setModelUi(model) {
     const name = model.checkpoint.split(/[/\\]/).pop();
     els.aiModelLabel.textContent = `${name} · ep ${model.epoch}`;
     els.aiModelLabel.classList.remove("muted-chip");
+    els.aiModelLabel.disabled = false;
   } else {
     els.aiModelLabel.textContent = "no model";
     els.aiModelLabel.classList.add("muted-chip");
+    els.aiModelLabel.disabled = true;
   }
   updateNavButtons();
 }
@@ -1722,11 +1743,21 @@ els.btnCopyJson.addEventListener("click", () => {
 });
 
 els.btnCopyConfig.addEventListener("click", () => {
-  copyText(state.configYaml, "config.yaml");
+  copyText(state.configYaml, "dataset creation config");
 });
 
 els.btnCopyTrainingConfig.addEventListener("click", () => {
-  copyText(state.trainingConfigYaml, "training_config.yaml");
+  copyText(state.trainingConfigYaml, "training / inference config");
+});
+
+els.aiModelLabel.addEventListener("click", () => {
+  if (!state.modelLoaded) {
+    return;
+  }
+  showErrorDialog(
+    "Model checkpoint metadata",
+    formatModelMetadata(state.modelMetadata, state.aiMaskThreshold),
+  );
 });
 
 els.btnRunAi.addEventListener("click", () => {
