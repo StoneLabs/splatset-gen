@@ -139,7 +139,10 @@ def _bar(ratio):
 def print_banner(device, model, n_train, n_val, n_test):
     params = sum(p.numel() for p in model.parameters())
     amp    = "amp" if (cfg.USE_AMP and device.type == "cuda") else "no amp"
-    info   = f"  ◆ splat·ai   {device} · {params/1e6:.2f}M params · batch {cfg.BATCH_SIZE} · lr {cfg.LR} · {amp}"
+    info   = (
+        f"  ◆ splat·ai   {device} · {params/1e6:.2f}M params · batch {cfg.BATCH_SIZE}"
+        f" · lr {cfg.LR} (plateau ×{cfg.LR_FACTOR}, patience {cfg.LR_PATIENCE}) · {amp}"
+    )
     split  = f"  train {n_train} · val {n_val} · test {n_test} · seed {cfg.SEED}"
     w      = max(len(info), len(split)) + 2
     print(f"\n{_DIM}{'─'*w}{_R}")
@@ -259,6 +262,7 @@ BINARY_METRIC_KEYS = ["bin_iou", "bin_dice", "bin_f1", "bin_precision", "bin_rec
 # Soft / alpha metrics: continuous sigmoid output vs soft target in [0, 1].
 SOFT_METRIC_KEYS = ["soft_iou", "soft_f1", "soft_dice", "alpha_mae"]
 METRIC_KEYS = BINARY_METRIC_KEYS + SOFT_METRIC_KEYS
+RUN_LOSS_KEYS = ["soft_loss", "bin_loss"]
 
 
 def _batch_metrics_cpu(logits, masks):
@@ -358,7 +362,6 @@ def eval_epoch(model, loader, device):
 
         # pull to CPU once — avoids per-sample GPU slices accumulating in the allocator
         m, counts = _batch_metrics_cpu(logits, masks)
-        del logits, imgs, pts, masks
 
         for k in conf:
             conf[k] += counts[k].sum().item()
@@ -366,14 +369,28 @@ def eval_epoch(model, loader, device):
             agg[k].append(m[k].mean().item())
 
         for i, run in enumerate(runs):
-            r = per_run.setdefault(run, {**{k: 0.0 for k in METRIC_KEYS}, "count": 0})
+            r = per_run.setdefault(
+                run,
+                {**{k: 0.0 for k in METRIC_KEYS}, "soft_loss": 0.0, "bin_loss": 0.0, "count": 0},
+            )
             for k in METRIC_KEYS:
                 r[k] += m[k][i].item()
+            sample_logits = logits[i : i + 1]
+            sample_masks = masks[i : i + 1]
+            r["soft_loss"] += bce_dice_loss(sample_logits, sample_masks).item()
+            bin_target = (sample_masks > cfg.MASK_THRESHOLD).float()
+            r["bin_loss"] += F.binary_cross_entropy_with_logits(
+                sample_logits, bin_target
+            ).item()
             r["count"] += 1
+
+        del logits, imgs, pts, masks
 
     for r in per_run.values():
         for k in METRIC_KEYS:
             r[k] /= r["count"]
+        r["soft_loss"] /= r["count"]
+        r["bin_loss"] /= r["count"]
 
     agg_mean = {k: float(np.mean(agg[k])) for k in METRIC_KEYS}
     return total_loss / len(loader), agg_mean, per_run, conf
@@ -469,12 +486,14 @@ class MetricsLogger:
                 header += [f"val_{k}" for k in METRIC_KEYS]
                 for r in self._runs:
                     header += [f"{r}_{k}" for k in METRIC_KEYS]
+                    header += [f"{r}_{k}" for k in RUN_LOSS_KEYS]
                 self._writer.writerow(header)
 
         row = [epoch, f"{lr:.6g}", f"{train_loss:.6f}", f"{val_loss:.6f}"]
         row += [f"{agg[k]:.6f}" for k in METRIC_KEYS]
         for r in self._runs:
             row += [f"{per_run[r][k]:.6f}" for k in METRIC_KEYS]
+            row += [f"{per_run[r][k]:.6f}" for k in RUN_LOSS_KEYS]
         self._writer.writerow(row)
         self._f.flush()   # survive Ctrl+C and allow live plotting
 
@@ -618,11 +637,20 @@ def main():
     else:
         scheduler_state = None
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=epochs, eta_min=cfg.LR_MIN, last_epoch=resume_epoch,
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=cfg.LR_FACTOR,
+        patience=cfg.LR_PATIENCE,
+        min_lr=cfg.LR_MIN,
     )
     if scheduler_state is not None:
-        scheduler.load_state_dict(scheduler_state)
+        try:
+            scheduler.load_state_dict(scheduler_state)
+        except ValueError:
+            print(
+                f"  {_YLW}scheduler state incompatible — starting fresh plateau schedule{_R}\n"
+            )
 
     logger = MetricsLogger(
         os.path.join(cfg.LOG_DIR, "training_log.csv"),
@@ -668,8 +696,15 @@ def main():
 
         train_loss, duration = train_epoch(model, train_loader, optimizer, device, scaler)
         val_loss, val_agg, val_per_run, _ = eval_epoch(model, val_loader, device)
-        current_lr = scheduler.get_last_lr()[0]
-        scheduler.step()
+        current_lr = optimizer.param_groups[0]["lr"]
+        scheduler.step(val_loss)
+        new_lr = optimizer.param_groups[0]["lr"]
+        if new_lr < current_lr:
+            print(
+                f"  {_YLW}lr reduced{_R}  {current_lr:.2e} → {new_lr:.2e}"
+                f"  {_DIM}(val loss plateau {cfg.LR_PATIENCE} epochs){_R}"
+            )
+            current_lr = new_lr
         epoch_times.append(duration)
 
         logger.log(epoch, current_lr, train_loss, val_loss, val_agg, val_per_run)
