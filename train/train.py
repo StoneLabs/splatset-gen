@@ -363,12 +363,54 @@ def eval_epoch(model, loader, device):
 
 # ── Checkpointing ──────────────────────────────────────────────────────────
 
-def save_checkpoint(model, optimizer, epoch, path):
-    torch.save({
+def find_resume_checkpoint(checkpoint_dir):
+    """Most recent training progress: interrupt → periodic backup → best."""
+    for name, label in (
+        (cfg.INTERRUPT_NAME, "interrupted"),
+        (cfg.BACKUP_NAME, "backup"),
+        (cfg.BEST_MODEL_NAME, "best"),
+    ):
+        path = os.path.join(checkpoint_dir, name)
+        if os.path.isfile(path):
+            return path, label
+    return None, None
+
+
+def save_checkpoint(
+    model,
+    optimizer,
+    epoch,
+    path,
+    *,
+    scheduler=None,
+    scaler=None,
+    training_state=None,
+):
+    payload = {
         "epoch":     epoch,
         "model":     model.state_dict(),
         "optimizer": optimizer.state_dict(),
-    }, path)
+    }
+    if scheduler is not None:
+        payload["scheduler"] = scheduler.state_dict()
+    if scaler is not None:
+        payload["scaler"] = scaler.state_dict()
+    if training_state is not None:
+        payload["training_state"] = training_state
+    torch.save(payload, path)
+
+
+def load_resume_checkpoint(path, model, optimizer, device, scaler=None):
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    model.load_state_dict(ckpt["model"])
+    optimizer.load_state_dict(ckpt["optimizer"])
+    if scaler is not None and "scaler" in ckpt:
+        scaler.load_state_dict(ckpt["scaler"])
+    return (
+        int(ckpt["epoch"]),
+        ckpt.get("training_state", {}),
+        ckpt.get("scheduler"),
+    )
 
 
 # ── Metrics logging ────────────────────────────────────────────────────────
@@ -378,21 +420,24 @@ class MetricsLogger:
     Appends one row per epoch to a CSV — ready to plot loss/IoU/Dice curves.
     Columns are fixed on the first write once the run names are known.
     """
-    def __init__(self, path):
+    def __init__(self, path, *, append=False):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        self._f      = open(path, "w", newline="")
+        resume = append and os.path.isfile(path) and os.path.getsize(path) > 0
+        self._f      = open(path, "a" if resume else "w", newline="")
         self._writer = None
         self._runs   = None
+        self._append = resume
 
     def log(self, epoch, lr, train_loss, val_loss, agg, per_run):
         if self._writer is None:
             self._runs = sorted(per_run)
-            header = ["epoch", "lr", "train_loss", "val_loss"]
-            header += [f"val_{k}" for k in METRIC_KEYS]
-            for r in self._runs:
-                header += [f"{r}_{k}" for k in METRIC_KEYS]
             self._writer = csv.writer(self._f)
-            self._writer.writerow(header)
+            if not self._append:
+                header = ["epoch", "lr", "train_loss", "val_loss"]
+                header += [f"val_{k}" for k in METRIC_KEYS]
+                for r in self._runs:
+                    header += [f"{r}_{k}" for k in METRIC_KEYS]
+                self._writer.writerow(header)
 
         row = [epoch, f"{lr:.6g}", f"{train_loss:.6f}", f"{val_loss:.6f}"]
         row += [f"{agg[k]:.6f}" for k in METRIC_KEYS]
@@ -438,7 +483,7 @@ def parse_args():
     parser.add_argument(
         "--restart",
         action="store_true",
-        help="Delete existing checkpoints, logs, and predictions before training",
+        help="Delete existing checkpoints, logs, and predictions before training (default: resume if checkpoint exists)",
     )
     parser.add_argument(
         "--epochs",
@@ -515,28 +560,73 @@ def main():
     # ── Model & optimiser ──────────────────────────────────────────────
     model     = PointConditionedUNet().to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.LR, weight_decay=cfg.WEIGHT_DECAY)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=cfg.LR_MIN)
     scaler    = torch.cuda.amp.GradScaler() if (device.type == "cuda" and cfg.USE_AMP) else None
 
     best_ckpt      = os.path.join(cfg.CHECKPOINT_DIR, cfg.BEST_MODEL_NAME)
     backup_ckpt    = os.path.join(cfg.CHECKPOINT_DIR, cfg.BACKUP_NAME)
     interrupt_ckpt = os.path.join(cfg.CHECKPOINT_DIR, cfg.INTERRUPT_NAME)
 
-    logger = MetricsLogger(os.path.join(cfg.LOG_DIR, "training_log.csv"))
-
-    print_banner(device, model, len(train_s), len(val_s), len(test_s))
-    print(f"  {_DIM}runs: {', '.join(runs_used)}{_R}\n")
-
-    # ── Training state ─────────────────────────────────────────────────
+    resume_path, resume_kind = (None, None) if args.restart else find_resume_checkpoint(cfg.CHECKPOINT_DIR)
+    resume_epoch = 0
+    start_epoch  = 1
     best_val_loss     = float("inf")
     patience_counter  = 0
     divergence_streak = 0
     prev_train_loss   = float("inf")
-    epoch_times: deque = deque(maxlen=5)
+
+    if resume_path:
+        resume_epoch, ts, scheduler_state = load_resume_checkpoint(
+            resume_path, model, optimizer, device, scaler=scaler,
+        )
+        start_epoch       = resume_epoch + 1
+        best_val_loss     = ts.get("best_val_loss", float("inf"))
+        patience_counter  = int(ts.get("patience_counter", 0))
+        divergence_streak = int(ts.get("divergence_streak", 0))
+        prev_train_loss   = float(ts.get("prev_train_loss", float("inf")))
+    else:
+        scheduler_state = None
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=epochs, eta_min=cfg.LR_MIN, last_epoch=resume_epoch,
+    )
+    if scheduler_state is not None:
+        scheduler.load_state_dict(scheduler_state)
+
+    logger = MetricsLogger(
+        os.path.join(cfg.LOG_DIR, "training_log.csv"),
+        append=bool(resume_path),
+    )
+
+    print_banner(device, model, len(train_s), len(val_s), len(test_s))
+    print(f"  {_DIM}runs: {', '.join(runs_used)}{_R}\n")
+    if resume_path:
+        print(
+            f"  {_GRN}{_BLD}resume{_R}  {_DIM}{resume_kind}{_R} checkpoint"
+            f"  ·  completed epoch {resume_epoch}"
+            f"  ·  continuing {start_epoch}–{epochs}\n"
+        )
+
+    def _training_state():
+        return {
+            "best_val_loss":     best_val_loss,
+            "patience_counter":  patience_counter,
+            "divergence_streak": divergence_streak,
+            "prev_train_loss":   prev_train_loss,
+        }
+
+    def _checkpoint_kwargs():
+        return {
+            "scheduler": scheduler,
+            "scaler": scaler,
+            "training_state": _training_state(),
+        }
 
     # ── Loop ───────────────────────────────────────────────────────────
-    last_epoch = 0
-    for epoch in range(1, epochs + 1):
+    epoch_times: deque = deque(maxlen=5)
+    last_epoch = resume_epoch
+    if start_epoch > epochs:
+        print(f"  {_DIM}already at epoch {resume_epoch}/{epochs} — skipping training loop{_R}\n")
+    for epoch in range(start_epoch, epochs + 1):
         last_epoch = epoch
         eta_str    = (
             f"~{_fmt_time(np.mean(epoch_times) * (epochs - epoch + 1))} left"
@@ -561,12 +651,12 @@ def main():
         if is_best:
             best_val_loss    = val_loss
             patience_counter = 0
-            save_checkpoint(model, optimizer, epoch, best_ckpt)
+            save_checkpoint(model, optimizer, epoch, best_ckpt, **_checkpoint_kwargs())
         else:
             patience_counter += 1
 
         if saved_bkp:
-            save_checkpoint(model, optimizer, epoch, backup_ckpt)
+            save_checkpoint(model, optimizer, epoch, backup_ckpt, **_checkpoint_kwargs())
 
         gap = val_loss - train_loss
         if gap > cfg.DIVERGENCE_GAP and train_loss < prev_train_loss:
@@ -584,7 +674,7 @@ def main():
             break
 
         if _stop:
-            save_checkpoint(model, optimizer, epoch, interrupt_ckpt)
+            save_checkpoint(model, optimizer, epoch, interrupt_ckpt, **_checkpoint_kwargs())
             print(f"  {_YLW}interrupted at epoch {epoch} — saved to {interrupt_ckpt}{_R}\n")
             break
 
