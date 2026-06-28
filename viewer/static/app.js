@@ -4,8 +4,12 @@ const STORAGE_KEYS = {
   topCol1: "viewer-layout-top-col1",
   topCol2: "viewer-layout-top-col2",
   topCol3: "viewer-layout-top-col3",
+  bottomCol1: "viewer-layout-bottom-col1",
+  bottomCol2: "viewer-layout-bottom-col2",
+  bottomCol3: "viewer-layout-bottom-col3",
   fitToPanel: "viewer-fit-to-panel",
   maskOpacity: "viewer-mask-opacity",
+  datasetName: "viewer-dataset-name",
 };
 
 const LAYOUT_LIMITS = {
@@ -28,6 +32,8 @@ const state = {
   total: 0,
   index: 0,
   configYaml: "",
+  trainingConfigYaml: "",
+  hasTrainingConfig: false,
   loading: false,
   fitToPanel: true,
   rowRatio: 0.58,
@@ -35,6 +41,9 @@ const state = {
   topCol1: 0.33,
   topCol2: 0.34,
   topCol3: 0.33,
+  bottomCol1: 0.34,
+  bottomCol2: 0.33,
+  bottomCol3: 0.33,
   maskOpacity: 0.5,
   gtViewMode: "mask",
   modelLoaded: false,
@@ -47,6 +56,8 @@ const state = {
   aiMaskThreshold: 0.5,
   aiMetrics: null,
   imageCache: null,
+  selectedDataset: null,
+  mediaGeneration: 0,
 };
 
 const els = {
@@ -57,7 +68,10 @@ const els = {
   splitterCol: document.getElementById("splitter-col"),
   splitterColAi: document.getElementById("splitter-col-ai"),
   splitterColBottom: document.getElementById("splitter-col-bottom"),
-  datasetPath: document.getElementById("dataset-path"),
+  splitterColBottom2: document.getElementById("splitter-col-bottom-2"),
+  datasetSelect: document.getElementById("dataset-select"),
+  btnReloadDataset: document.getElementById("btn-reload-dataset"),
+  datasetCount: document.getElementById("dataset-count"),
   sampleIndex: document.getElementById("sample-index"),
   sampleId: document.getElementById("sample-id"),
   sampleCount: document.getElementById("sample-count"),
@@ -91,6 +105,8 @@ const els = {
   maskOpacityLabel: document.getElementById("mask-opacity-label"),
   annotationJson: document.getElementById("annotation-json"),
   configYaml: document.getElementById("config-yaml"),
+  trainingConfigPanel: document.getElementById("training-config-panel"),
+  trainingConfigYaml: document.getElementById("training-config-yaml"),
   fitToPanel: document.getElementById("fit-to-panel"),
   btnFirst: document.getElementById("btn-first"),
   btnPrev: document.getElementById("btn-prev"),
@@ -98,6 +114,7 @@ const els = {
   btnLast: document.getElementById("btn-last"),
   btnCopyJson: document.getElementById("btn-copy-json"),
   btnCopyConfig: document.getElementById("btn-copy-config"),
+  btnCopyTrainingConfig: document.getElementById("btn-copy-training-config"),
   btnRunAi: document.getElementById("btn-run-ai"),
   errorDialogBackdrop: document.getElementById("error-dialog-backdrop"),
   errorDialogTitle: document.getElementById("error-dialog-title"),
@@ -213,6 +230,9 @@ function loadLayoutPrefs() {
   const topCol1 = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.topCol1));
   const topCol2 = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.topCol2));
   const topCol3 = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.topCol3));
+  const bottomCol1 = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.bottomCol1));
+  const bottomCol2 = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.bottomCol2));
+  const bottomCol3 = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.bottomCol3));
   const fit = localStorage.getItem(STORAGE_KEYS.fitToPanel);
   const maskOpacity = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.maskOpacity));
 
@@ -231,6 +251,15 @@ function loadLayoutPrefs() {
   if (!Number.isNaN(topCol3)) {
     state.topCol3 = topCol3;
   }
+  if (!Number.isNaN(bottomCol1)) {
+    state.bottomCol1 = bottomCol1;
+  }
+  if (!Number.isNaN(bottomCol2)) {
+    state.bottomCol2 = bottomCol2;
+  }
+  if (!Number.isNaN(bottomCol3)) {
+    state.bottomCol3 = bottomCol3;
+  }
   const legacySum = state.topCol1 + state.topCol2 + state.topCol3;
   if (legacySum > 0 && legacySum < 0.95) {
     const legacyAi = 1 - legacySum;
@@ -245,6 +274,14 @@ function loadLayoutPrefs() {
   }
 
   normalizeTopColumns();
+  normalizeBottomColumns();
+}
+
+function normalizeBottomColumns() {
+  const min = LAYOUT_LIMITS.min;
+  state.bottomCol1 = clamp(state.bottomCol1, min, 1 - 2 * min);
+  state.bottomCol2 = clamp(state.bottomCol2, min, 1 - state.bottomCol1 - min);
+  state.bottomCol3 = clamp(1 - state.bottomCol1 - state.bottomCol2, min, 1 - state.bottomCol1 - min);
 }
 
 function normalizeTopColumns() {
@@ -260,6 +297,9 @@ function saveLayoutPrefs() {
   localStorage.setItem(STORAGE_KEYS.topCol1, String(state.topCol1));
   localStorage.setItem(STORAGE_KEYS.topCol2, String(state.topCol2));
   localStorage.setItem(STORAGE_KEYS.topCol3, String(state.topCol3));
+  localStorage.setItem(STORAGE_KEYS.bottomCol1, String(state.bottomCol1));
+  localStorage.setItem(STORAGE_KEYS.bottomCol2, String(state.bottomCol2));
+  localStorage.setItem(STORAGE_KEYS.bottomCol3, String(state.bottomCol3));
   localStorage.setItem(STORAGE_KEYS.fitToPanel, String(state.fitToPanel));
   localStorage.setItem(STORAGE_KEYS.maskOpacity, String(state.maskOpacity));
 }
@@ -267,8 +307,6 @@ function saveLayoutPrefs() {
 function applyLayout() {
   const topWeight = state.rowRatio;
   const bottomWeight = 1 - state.rowRatio;
-  const leftWeight = state.colRatio;
-  const rightWeight = 1 - state.colRatio;
 
   els.rowTop.style.flex = `${topWeight} 1 0%`;
   els.rowBottom.style.flex = `${bottomWeight} 1 0%`;
@@ -279,8 +317,17 @@ function applyLayout() {
   topPanels[2].style.flex = `${state.topCol3} 1 0%`;
 
   const bottomPanels = getRowPanels(els.rowBottom);
-  bottomPanels[0].style.flex = `${leftWeight} 1 0%`;
-  bottomPanels[1].style.flex = `${rightWeight} 1 0%`;
+  if (state.hasTrainingConfig && bottomPanels.length >= 3) {
+    bottomPanels[0].style.flex = `${state.bottomCol1} 1 0%`;
+    bottomPanels[1].style.flex = `${state.bottomCol2} 1 0%`;
+    bottomPanels[2].style.flex = `${state.bottomCol3} 1 0%`;
+  } else {
+    bottomPanels[0].style.flex = `${state.colRatio} 1 0%`;
+    bottomPanels[1].style.flex = `${1 - state.colRatio} 1 0%`;
+    if (bottomPanels.length >= 3) {
+      bottomPanels[2].style.flex = "0 0 0";
+    }
+  }
 }
 
 function applyFitMode() {
@@ -345,6 +392,146 @@ async function readErrorResponse(response) {
     return trimmed.slice(0, 500);
   }
   return `Request failed: ${response.status}`;
+}
+
+function updateTrainingConfigUi(meta) {
+  const tc = meta.training_config;
+  state.hasTrainingConfig = Boolean(tc?.yaml);
+  if (!state.hasTrainingConfig) {
+    els.trainingConfigPanel.hidden = true;
+    els.splitterColBottom2.hidden = true;
+    state.trainingConfigYaml = "";
+    els.trainingConfigYaml.textContent = "";
+    applyLayout();
+    return;
+  }
+
+  els.trainingConfigPanel.hidden = false;
+  els.splitterColBottom2.hidden = false;
+  state.trainingConfigYaml = tc.yaml;
+  els.trainingConfigYaml.textContent = tc.yaml;
+  applyLayout();
+}
+
+function populateDatasetSelect(datasets, selected) {
+  els.datasetSelect.replaceChildren();
+  for (const item of datasets) {
+    const option = document.createElement("option");
+    option.value = item.name;
+    option.textContent = `${item.name} (${item.count.toLocaleString()})`;
+    option.selected = item.name === selected;
+    els.datasetSelect.append(option);
+  }
+}
+
+function updateDatasetUi(meta) {
+  state.total = meta.count;
+  state.selectedDataset = meta.selected ?? null;
+  populateDatasetSelect(meta.datasets ?? [], meta.selected);
+  localStorage.setItem(STORAGE_KEYS.datasetName, meta.selected ?? "");
+  const ann = meta.annotations_file ? ` · ${meta.annotations_file}` : "";
+  els.datasetCount.textContent = `${state.total.toLocaleString()} samples${ann}`;
+  els.sampleIndex.max = Math.max(0, state.total - 1);
+  els.sampleCount.textContent = `/ ${state.total.toLocaleString()}`;
+  setModelUi(meta.model);
+}
+
+async function applyDatasetMeta(meta) {
+  updateDatasetUi(meta);
+  updateTrainingConfigUi(meta);
+
+  const config = await fetchJson("/api/config");
+  state.configYaml = config.yaml;
+  els.configYaml.textContent = state.configYaml;
+
+  state.index = 0;
+  state.imageCache = null;
+  state.mediaGeneration += 1;
+  clearAiPrediction();
+  resetAllPanelZoom();
+
+  if (state.total === 0) {
+    els.annotationJson.textContent = "";
+    els.maskImage.removeAttribute("src");
+    els.renderCanvas.width = 0;
+    els.renderCanvas.height = 0;
+    els.clickLabel.textContent = "";
+    els.objectLabel.textContent = "";
+    els.sampleId.value = "";
+    els.sampleIndex.value = "0";
+    renderGtPanelView();
+    setStatus("Dataset is empty");
+    return;
+  }
+
+  await fetchAndRenderSample(0);
+  setStatus(`Loaded ${meta.selected}`);
+}
+
+async function selectDataset(name) {
+  if (!name || state.loading || name === state.selectedDataset) {
+    return;
+  }
+
+  state.loading = true;
+  els.datasetSelect.disabled = true;
+  els.btnReloadDataset.disabled = true;
+  updateNavButtons();
+  setStatus("Loading dataset…");
+
+  try {
+    const response = await fetch("/api/dataset/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) {
+      throw new Error(await readErrorResponse(response));
+    }
+
+    await applyDatasetMeta(await response.json());
+  } catch (error) {
+    reportError("Dataset switch failed", error.message, error);
+  } finally {
+    state.loading = false;
+    els.datasetSelect.disabled = false;
+    els.btnReloadDataset.disabled = false;
+    updateNavButtons();
+  }
+}
+
+async function reloadDataset() {
+  const name = els.datasetSelect.value || state.selectedDataset;
+  if (!name || state.loading) {
+    return;
+  }
+
+  state.loading = true;
+  els.datasetSelect.disabled = true;
+  els.btnReloadDataset.disabled = true;
+  updateNavButtons();
+  setStatus("Reloading dataset…");
+
+  try {
+    const response = await fetch("/api/dataset/reload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) {
+      throw new Error(await readErrorResponse(response));
+    }
+
+    await applyDatasetMeta(await response.json());
+    setStatus(`Reloaded ${name}`);
+  } catch (error) {
+    reportError("Dataset reload failed", error.message, error);
+  } finally {
+    state.loading = false;
+    els.datasetSelect.disabled = false;
+    els.btnReloadDataset.disabled = false;
+    updateNavButtons();
+  }
 }
 
 function updateNavButtons() {
@@ -955,15 +1142,24 @@ async function renderImageWithCross(rgbImage, point) {
   drawCross(ctx, x, y, canvas.width, canvas.height);
 }
 
+function mediaCacheToken(index = state.index) {
+  return `${state.mediaGeneration}-${index}`;
+}
+
+function mediaUrl(path, index = state.index) {
+  return `/media/${path}?t=${encodeURIComponent(mediaCacheToken(index))}`;
+}
+
 async function loadSampleImages(imagePath, maskPath) {
-  const cacheKey = `${state.index}:${imagePath}:${maskPath}`;
+  const cacheKey = `${state.selectedDataset}:${mediaCacheToken()}:${imagePath}:${maskPath}`;
   if (state.imageCache?.key === cacheKey) {
     return state.imageCache;
   }
 
-  const rgbUrl = `/media/${imagePath}?t=${encodeURIComponent(state.index)}`;
-  const maskUrl = `/media/${maskPath}?t=${encodeURIComponent(state.index)}`;
-  const [rgbImage, maskImage] = await Promise.all([loadImage(rgbUrl), loadImage(maskUrl)]);
+  const [rgbImage, maskImage] = await Promise.all([
+    loadImage(mediaUrl(imagePath)),
+    loadImage(mediaUrl(maskPath)),
+  ]);
 
   state.imageCache = {
     key: cacheKey,
@@ -987,6 +1183,32 @@ function refreshAiPanel() {
   renderAiPanelView();
 }
 
+async function fetchAndRenderSample(index) {
+  const clamped = Math.max(0, Math.min(index, state.total - 1));
+  const payload = await fetchJson(`/api/sample/index/${clamped}`);
+  const record = payload.record;
+  state.index = payload.index;
+  state.imageCache = null;
+  clearAiPrediction();
+  resetAllPanelZoom();
+
+  els.sampleIndex.value = String(state.index);
+  els.sampleId.value = record.id;
+  els.sampleCount.textContent = `/ ${state.total.toLocaleString()}`;
+
+  const [x, y] = record.point;
+  els.clickLabel.textContent = `point [${x}, ${y}]`;
+  els.objectLabel.textContent = `object ${record.object_id} / ${record.num_objects}`;
+
+  const images = await loadSampleImages(record.image, record.mask);
+  renderImageWithCross(images.rgbImage, record.point);
+  els.maskImage.src = mediaUrl(record.mask);
+  renderGtPanelView();
+  els.annotationJson.textContent = JSON.stringify(record, null, 2);
+
+  return record;
+}
+
 async function showSample(index) {
   if (state.loading || state.total === 0) {
     return;
@@ -998,27 +1220,7 @@ async function showSample(index) {
   setStatus(`Loading sample ${clamped + 1}…`);
 
   try {
-    const payload = await fetchJson(`/api/sample/index/${clamped}`);
-    const record = payload.record;
-    state.index = payload.index;
-    state.imageCache = null;
-    clearAiPrediction();
-    resetAllPanelZoom();
-
-    els.sampleIndex.value = String(state.index);
-    els.sampleId.value = record.id;
-    els.sampleCount.textContent = `/ ${state.total.toLocaleString()}`;
-
-    const [x, y] = record.point;
-    els.clickLabel.textContent = `point [${x}, ${y}]`;
-    els.objectLabel.textContent = `object ${record.object_id} / ${record.num_objects}`;
-
-    const images = await loadSampleImages(record.image, record.mask);
-    renderImageWithCross(images.rgbImage, record.point);
-    els.maskImage.src = `/media/${record.mask}?t=${state.index}`;
-    renderGtPanelView();
-    els.annotationJson.textContent = JSON.stringify(record, null, 2);
-
+    const record = await fetchAndRenderSample(clamped);
     setStatus(`Sample ${state.index + 1} · id ${record.id}`);
   } catch (error) {
     reportError("Sample load failed", error.message, error);
@@ -1045,7 +1247,8 @@ function setupSplitters() {
   bindRowSplitter(els.splitterRow, els.workspace);
   bindTopColumnSplitter(els.splitterCol, 0);
   bindTopColumnSplitter(els.splitterColAi, 1);
-  bindBottomColumnSplitter(els.splitterColBottom, els.rowBottom);
+  bindBottomPrimarySplitter(els.splitterColBottom, els.rowBottom);
+  bindBottomColumnSplitter(els.splitterColBottom2, 1);
 }
 
 function bindRowSplitter(splitter, container) {
@@ -1093,7 +1296,7 @@ function bindTopColumnSplitter(splitter, splitterIndex) {
   });
 }
 
-function bindBottomColumnSplitter(splitter, row) {
+function bindBottomPrimarySplitter(splitter, row) {
   startDrag(splitter, (event) => {
     const rect = row.getBoundingClientRect();
     const available = rect.width - getVerticalSplitterWidth(row);
@@ -1102,7 +1305,48 @@ function bindBottomColumnSplitter(splitter, row) {
     }
 
     const x = (event.clientX ?? event.touches?.[0]?.clientX ?? 0) - rect.left;
-    state.colRatio = clamp(x / available, LAYOUT_LIMITS.min, LAYOUT_LIMITS.max);
+    const ratio = clamp(x / available, LAYOUT_LIMITS.min, 1 - LAYOUT_LIMITS.min);
+
+    if (state.hasTrainingConfig) {
+      state.bottomCol1 = clamp(ratio, LAYOUT_LIMITS.min, 1 - 2 * LAYOUT_LIMITS.min);
+      normalizeBottomColumns();
+    } else {
+      state.colRatio = ratio;
+    }
+
+    applyLayout();
+    saveLayoutPrefs();
+  });
+}
+
+function bindBottomColumnSplitter(splitter, splitterIndex) {
+  startDrag(splitter, (event) => {
+    if (!state.hasTrainingConfig) {
+      return;
+    }
+
+    const row = els.rowBottom;
+    const rect = row.getBoundingClientRect();
+    const available = rect.width - getVerticalSplitterWidth(row);
+    if (available <= 0) {
+      return;
+    }
+
+    const x = (event.clientX ?? event.touches?.[0]?.clientX ?? 0) - rect.left;
+    const ratio = clamp(x / available, LAYOUT_LIMITS.min, 1 - LAYOUT_LIMITS.min);
+
+    if (splitterIndex === 0) {
+      state.bottomCol1 = clamp(ratio, LAYOUT_LIMITS.min, 1 - 2 * LAYOUT_LIMITS.min);
+    } else {
+      const combined = clamp(
+        ratio,
+        state.bottomCol1 + LAYOUT_LIMITS.min,
+        1 - LAYOUT_LIMITS.min,
+      );
+      state.bottomCol2 = combined - state.bottomCol1;
+    }
+
+    normalizeBottomColumns();
     applyLayout();
     saveLayoutPrefs();
   });
@@ -1158,30 +1402,18 @@ async function init() {
 
   try {
     const meta = await fetchJson("/api/meta");
-    state.total = meta.count;
-    els.datasetPath.textContent = meta.dataset_dir;
-    els.sampleIndex.max = Math.max(0, state.total - 1);
-    els.sampleCount.textContent = `/ ${state.total.toLocaleString()}`;
-    setModelUi(meta.model);
     clearAiPrediction();
-
-    const config = await fetchJson("/api/config");
-    state.configYaml = config.yaml;
-    els.configYaml.textContent = state.configYaml;
-
-    if (state.total === 0) {
-      setStatus("Dataset is empty");
-      updateNavButtons();
-      return;
-    }
-
-    await showSample(0);
+    await applyDatasetMeta(meta);
   } catch (error) {
     reportError("Initialization failed", error.message, error);
   }
 }
 
 els.btnFirst.addEventListener("click", () => showSample(0));
+els.btnReloadDataset.addEventListener("click", () => reloadDataset());
+els.datasetSelect.addEventListener("change", () => {
+  selectDataset(els.datasetSelect.value);
+});
 els.btnPrev.addEventListener("click", () => showSample(state.index - 1));
 els.btnNext.addEventListener("click", () => showSample(state.index + 1));
 els.btnLast.addEventListener("click", () => showSample(state.total - 1));
@@ -1275,6 +1507,10 @@ els.btnCopyJson.addEventListener("click", () => {
 
 els.btnCopyConfig.addEventListener("click", () => {
   copyText(state.configYaml, "config.yaml");
+});
+
+els.btnCopyTrainingConfig.addEventListener("click", () => {
+  copyText(state.trainingConfigYaml, "training_config.yaml");
 });
 
 els.btnRunAi.addEventListener("click", () => {

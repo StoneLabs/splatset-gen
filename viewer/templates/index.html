@@ -8,9 +8,15 @@
   </head>
   <body>
     <header class="toolbar">
-      <div class="toolbar-group">
-        <h1>Splat Dataset Viewer</h1>
-        <span id="dataset-path" class="muted"></span>
+      <div class="toolbar-group dataset-controls">
+        <label class="dataset-select">
+          <span>Dataset</span>
+          <select id="dataset-select" aria-label="Select dataset run"></select>
+        </label>
+        <button id="btn-reload-dataset" type="button" title="Rescan datasets folder and reload selection">
+          Reload
+        </button>
+        <span id="dataset-count" class="muted"></span>
       </div>
       <div class="toolbar-group nav-controls">
         <button id="btn-first" type="button" title="First sample (Home)">|◀</button>
@@ -170,17 +176,39 @@
           id="splitter-col-bottom"
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize code columns"
+          aria-label="Resize annotation and config columns"
           tabindex="0"
         ></div>
 
         <section class="panel" aria-label="Generation config">
           <header>
             <h2>config.yaml</h2>
+            <span class="chip muted-chip">generation</span>
             <button id="btn-copy-config" type="button" class="ghost">Copy</button>
           </header>
           <div class="panel-body code-panel">
             <pre id="config-yaml"></pre>
+          </div>
+        </section>
+
+        <div
+          class="splitter splitter-v"
+          id="splitter-col-bottom-2"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize generation and training config columns"
+          tabindex="0"
+          hidden
+        ></div>
+
+        <section class="panel" id="training-config-panel" aria-label="Training config" hidden>
+          <header>
+            <h2>training_config.yaml</h2>
+            <span class="chip muted-chip">inference</span>
+            <button id="btn-copy-training-config" type="button" class="ghost">Copy</button>
+          </header>
+          <div class="panel-body code-panel">
+            <pre id="training-config-yaml"></pre>
           </div>
         </section>
       </div>

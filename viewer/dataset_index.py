@@ -9,6 +9,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+ANNOTATION_FILES = ("annotations.jsonl", "annotations_processed.jsonl")
+
+
+def find_annotations_path(dataset_dir: Path) -> Path:
+    for name in ANNOTATION_FILES:
+        path = dataset_dir / name
+        if path.is_file():
+            return path
+    names = ", ".join(ANNOTATION_FILES)
+    raise FileNotFoundError(f"Missing {names} in {dataset_dir}")
+
+
 @dataclass(frozen=True)
 class SampleRef:
     sample_id: str
@@ -23,7 +35,7 @@ class DatasetIndex:
 
     def __init__(self, dataset_dir: Path) -> None:
         self.dataset_dir = dataset_dir.resolve()
-        self.annotations_path = self.dataset_dir / "annotations.jsonl"
+        self.annotations_path = find_annotations_path(self.dataset_dir)
         self.config_path = self.dataset_dir / "config.yaml"
         self._refs: list[SampleRef] = []
         self._id_to_index: dict[str, int] = {}
