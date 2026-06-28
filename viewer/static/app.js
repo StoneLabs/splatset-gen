@@ -1238,7 +1238,7 @@ async function runAiPrediction({ manageLoading = true } = {}) {
   if (!state.modelLoaded) {
     reportError(
       "AI unavailable",
-      "No model loaded. Pass --model or set inference.checkpoint in training_config.yaml.",
+      "No model loaded. Pass --model with a checkpoint (.pth).",
     );
     return;
   }
