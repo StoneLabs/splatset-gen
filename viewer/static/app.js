@@ -806,9 +806,11 @@ function renderAiSplitView() {
     return;
   }
 
+  const maskPreviewCanvas = document.createElement("canvas");
+  renderMaskOverlayOnCanvas(maskPreviewCanvas, rgbImage, maskSource, 1);
   const overlayCanvas = document.createElement("canvas");
   renderMaskOverlayOnCanvas(overlayCanvas, rgbImage, maskSource, state.aiMaskOpacity);
-  renderSideBySideCanvas(els.aiPredictionCanvas, maskSource, overlayCanvas);
+  renderSideBySideCanvas(els.aiPredictionCanvas, maskPreviewCanvas, overlayCanvas);
 }
 
 function renderGtSplitView() {
@@ -818,18 +820,20 @@ function renderGtSplitView() {
   renderSideBySideCanvas(els.maskSplitCanvas, maskImage, overlayCanvas);
 }
 
-function setComparePixel(imageData, offset, red, green, blue) {
+function setComparePixel(imageData, offset, red, green, blue, alpha = 255) {
   imageData.data[offset] = red;
   imageData.data[offset + 1] = green;
   imageData.data[offset + 2] = blue;
-  imageData.data[offset + 3] = 255;
+  imageData.data[offset + 3] = alpha;
 }
 
-function renderBinaryComparePixel(imageData, offset, predObject, gtObject) {
+function renderBinaryComparePixel(imageData, offset, predObject, gtObject, forOverlay = false) {
   if (predObject && gtObject) {
     setComparePixel(imageData, offset, 56, 203, 92);
   } else if (!predObject && !gtObject) {
-    setComparePixel(imageData, offset, 0, 0, 0);
+    if (!forOverlay) {
+      setComparePixel(imageData, offset, 0, 0, 0);
+    }
   } else if (!predObject && gtObject) {
     setComparePixel(imageData, offset, 255, 255, 255);
   } else {
@@ -837,13 +841,15 @@ function renderBinaryComparePixel(imageData, offset, predObject, gtObject) {
   }
 }
 
-function renderAlphaComparePixel(imageData, offset, predA, gtA) {
+function renderAlphaComparePixel(imageData, offset, predA, gtA, forOverlay = false) {
   const overlap = Math.min(predA, gtA);
   const fnAmount = Math.max(0, gtA - predA);
   const fpAmount = Math.max(0, predA - gtA);
 
   if (overlap < 0.01 && fnAmount < 0.01 && fpAmount < 0.01) {
-    setComparePixel(imageData, offset, 0, 0, 0);
+    if (!forOverlay) {
+      setComparePixel(imageData, offset, 0, 0, 0);
+    }
     return;
   }
 
@@ -853,7 +859,7 @@ function renderAlphaComparePixel(imageData, offset, predA, gtA) {
   setComparePixel(imageData, offset, red, green, blue);
 }
 
-function renderCompareMapOnCanvas(canvas) {
+function renderCompareMapOnCanvas(canvas, { forOverlay = false } = {}) {
   const predImg = state.aiAlphaImage;
   const gtImg = state.imageCache?.maskImage;
   if (!predImg || !gtImg) {
@@ -880,6 +886,7 @@ function renderCompareMapOnCanvas(canvas) {
         offset,
         predGray[i] > cutoff,
         gtGray[i] > cutoff,
+        forOverlay,
       );
     } else {
       renderAlphaComparePixel(
@@ -887,6 +894,7 @@ function renderCompareMapOnCanvas(canvas) {
         offset,
         predGray[i] / 255,
         gtGray[i] / 255,
+        forOverlay,
       );
     }
   }
@@ -906,7 +914,7 @@ function renderAiCompareOverlayView() {
   }
 
   const compareCanvas = document.createElement("canvas");
-  if (!renderCompareMapOnCanvas(compareCanvas)) {
+  if (!renderCompareMapOnCanvas(compareCanvas, { forOverlay: true })) {
     return;
   }
 
@@ -932,13 +940,18 @@ function renderAiCompareSplitView() {
     return;
   }
 
+  const overlayCompareCanvas = document.createElement("canvas");
+  if (!renderCompareMapOnCanvas(overlayCompareCanvas, { forOverlay: true })) {
+    return;
+  }
+
   const overlayCanvas = document.createElement("canvas");
   overlayCanvas.width = rgbImage.naturalWidth;
   overlayCanvas.height = rgbImage.naturalHeight;
   const ctx = overlayCanvas.getContext("2d");
   ctx.drawImage(rgbImage, 0, 0);
   ctx.globalAlpha = state.aiMaskOpacity;
-  ctx.drawImage(compareCanvas, 0, 0);
+  ctx.drawImage(overlayCompareCanvas, 0, 0);
   ctx.globalAlpha = 1;
 
   renderSideBySideCanvas(els.aiPredictionCanvas, compareCanvas, overlayCanvas);
