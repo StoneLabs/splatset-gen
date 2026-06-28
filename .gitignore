@@ -11,3 +11,9 @@ wheels/
 
 # Generated datasets
 outputs/
+
+# Training artifacts
+train/checkpoints/
+train/logs/
+train/predictions/
+train/.venv/

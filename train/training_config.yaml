@@ -1,0 +1,52 @@
+# Training and inference settings for click-to-segment model.
+# Paths are relative to train/ unless absolute.
+
+paths:
+  training_data_dir: ../outputs
+  checkpoint_dir: checkpoints
+  log_dir: logs
+  predictions_dir: predictions
+  best_model_name: best_by_val_loss.pth
+  backup_name: latest_periodic.pth
+  interrupt_name: interrupted.pth
+
+dataset:
+  # Legacy fallback when train.py gets no CLI dataset dirs. Empty = all run_* folders.
+  train_runs: []
+  train_ratio: 0.70
+  val_ratio: 0.20
+  test_ratio: 0.10
+  seed: 42
+
+model:
+  base_channels: 32
+
+training:
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  lr: 0.001
+  lr_min: 0.00001
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  use_amp: false
+  balance_runs: true
+  bce_weight: 0.4
+
+checkpointing:
+  backup_every_epochs: 5
+
+early_stopping:
+  patience: 20
+  divergence_gap: 0.10
+  divergence_streak: 10
+
+evaluation:
+  mask_threshold: 0.50
+  save_predictions: false
+
+inference:
+  # Default checkpoint for viewer (--model overrides). null = no model loaded.
+  checkpoint: null
+
+device: auto
