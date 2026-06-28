@@ -201,12 +201,11 @@ class ModelRunner:
         if pred_u8.shape != gt_u8.shape:
             raise ValueError(f"pred/gt shape mismatch: {pred_u8.shape} vs {gt_u8.shape}")
 
+        cutoff = int(round(threshold * 255))
         if output_format == "binary":
-            cutoff = int(round(threshold * 255))
             pred_plane = ModelRunner.binarize_alpha(pred_u8, threshold)
             gt_plane = np.where(gt_u8 > cutoff, 255, 0).astype(np.uint8)
         else:
-            cutoff = int(round(threshold * 255))
             pred_plane = pred_u8
             gt_plane = gt_u8
 
