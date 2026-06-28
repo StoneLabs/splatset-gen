@@ -23,7 +23,7 @@ def sample_click(
 
     fg = (alpha > alpha_threshold) & (object_id_map >= 0)
     if object_weights is not None and object_weights.numel() > 0:
-        oid = object_id_map.clamp(min=0)
+        oid = object_id_map.clamp(min=0).to(torch.int64)
         contrib = object_weights.gather(-1, oid.unsqueeze(-1)).squeeze(-1)
         fg = fg & (contrib > weight_threshold)
 
