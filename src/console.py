@@ -307,7 +307,9 @@ def _background_plan_lines(cfg: dict[str, Any], project_root: Path | None) -> li
     bg_spec = background_from_config(cfg, base_dir=project_root)
     lines = [f"  Mode             {bg_spec.mode}"]
 
-    if bg_spec.mode == "image":
+    if bg_spec.mode == "random_pixels":
+        pass
+    elif bg_spec.mode == "image":
         image_dir = bg_spec.image_dir
         if image_dir is None:
             lines.append("  Image dir        [red](not set)[/]")

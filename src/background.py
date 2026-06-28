@@ -1,4 +1,4 @@
-"""Background compositing after splat pass (solid color or image)."""
+"""Background compositing after splat pass (solid color, image, or random pixels)."""
 
 from __future__ import annotations
 
@@ -107,6 +107,10 @@ def sample_background_layer(
         bg = torch.tensor(color, dtype=torch.float32).view(1, 1, 3).expand(height, width, 3).clone()
         return bg, {"mode": "solid", "color": list(color)}
 
+    if background.mode == "random_pixels":
+        arr = rng.random((height, width, 3), dtype=np.float32)
+        return torch.from_numpy(arr), {"mode": "random_pixels"}
+
     if background.mode != "image":
         raise ValueError(f"Unknown background mode {background.mode!r}")
 
@@ -138,7 +142,7 @@ def composite(
     height: int,
     rng: np.random.Generator | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
-    """Composite foreground splats over solid color or a random background image.
+    """Composite foreground splats over solid color, random pixels, or a background image.
 
     Masks and click sampling always use ``object_id_map`` / ``alpha`` from the
     splat pass — never post-composite RGB.
@@ -150,9 +154,11 @@ def composite(
             height,
             rng or np.random.default_rng(),
         )
-    elif background.mode == "image":
+    elif background.mode in {"image", "random_pixels"}:
         if rng is None:
-            raise ValueError("background.mode='image' requires an RNG for random image selection")
+            raise ValueError(
+                f"background.mode={background.mode!r} requires an RNG for random background selection"
+            )
         bg_rgb, meta = sample_background_layer(background, width, height, rng)
     else:
         raise ValueError(f"Unknown background mode {background.mode!r}")

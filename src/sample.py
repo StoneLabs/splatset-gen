@@ -138,6 +138,8 @@ def generate_one_sample(
 
             if background.mode == "image":
                 bg_hint = f"random from {background.image_dir.name if background.image_dir else '?'}"
+            elif background.mode == "random_pixels":
+                bg_hint = "random pixels"
             else:
                 bg_hint = f"solid {list(background.solid_color)}"
             _vstatus(verbose, "composite", bg_hint)
@@ -146,6 +148,8 @@ def generate_one_sample(
             )
             if bg_meta.get("mode") == "image":
                 comp_detail = f"{bg_meta.get('image', '?')} · {bg_meta.get('resize_mode', 'crop')}"
+            elif bg_meta.get("mode") == "random_pixels":
+                comp_detail = "random pixels"
             else:
                 comp_detail = f"solid {bg_meta.get('color', [])}"
             _vstatus(verbose, "composite", comp_detail)
