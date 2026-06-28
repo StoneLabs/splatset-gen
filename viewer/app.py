@@ -33,6 +33,7 @@ app = Flask(
 )
 index: DatasetIndex | None = None
 model_runner: ModelRunner | None = None
+model_checkpoint_override: Path | None = None
 datasets_root: Path | None = None
 dataset_catalog: list[dict] = []
 selected_dataset_name: str | None = None
@@ -177,6 +178,40 @@ def _viewer_meta(ds: DatasetIndex) -> dict:
     }
 
 
+def _resolve_checkpoint_path() -> Path | None:
+    if model_checkpoint_override is not None:
+        return model_checkpoint_override
+    ckpt = (
+        Path(train_config.cfg.INFERENCE_CHECKPOINT)
+        if train_config.cfg.INFERENCE_CHECKPOINT
+        else None
+    )
+    if ckpt is None:
+        default_ckpt = Path(train_config.cfg.CHECKPOINT_DIR) / train_config.cfg.BEST_MODEL_NAME
+        if default_ckpt.is_file():
+            ckpt = default_ckpt
+    return ckpt
+
+
+def load_model_runner() -> None:
+    global model_runner
+    model_runner = None
+    ckpt = _resolve_checkpoint_path()
+    if ckpt is None:
+        return
+    try:
+        model_runner = ModelRunner(ckpt)
+    except FileNotFoundError as exc:
+        print(f"Warning: {exc}")
+
+
+def reload_model() -> dict:
+    if training_config_path is not None and training_config_path.is_file():
+        train_config.cfg = load_training_config(training_config_path)
+    load_model_runner()
+    return _model_meta()
+
+
 def _model_meta() -> dict:
     if model_runner is None:
         return {
@@ -250,6 +285,13 @@ def api_dataset_reload():
     payload = request.get_json(silent=True) or {}
     name = payload.get("name") or selected_dataset_name
     ds = reload_dataset(name=str(name) if name else None)
+    return jsonify(_viewer_meta(ds))
+
+
+@app.route("/api/model/reload", methods=["POST"])
+def api_model_reload():
+    ds = _require_index()
+    reload_model()
     return jsonify(_viewer_meta(ds))
 
 
@@ -379,7 +421,7 @@ def create_app(
     initial: str | None = None,
     checkpoint: Path | None = None,
 ) -> Flask:
-    global index, model_runner, datasets_root, dataset_catalog, selected_dataset_name
+    global index, model_runner, model_checkpoint_override, datasets_root, dataset_catalog, selected_dataset_name
 
     root = resolve_datasets_root(str(datasets_dir))
     datasets_root = root
@@ -398,21 +440,8 @@ def create_app(
 
     select_dataset(start_name)
 
-    model_runner = None
-    ckpt = checkpoint or (
-        Path(train_config.cfg.INFERENCE_CHECKPOINT)
-        if train_config.cfg.INFERENCE_CHECKPOINT
-        else None
-    )
-    if ckpt is None:
-        default_ckpt = Path(train_config.cfg.CHECKPOINT_DIR) / train_config.cfg.BEST_MODEL_NAME
-        if default_ckpt.is_file():
-            ckpt = default_ckpt
-    if ckpt is not None:
-        try:
-            model_runner = ModelRunner(ckpt)
-        except FileNotFoundError as exc:
-            print(f"Warning: {exc}")
+    model_checkpoint_override = checkpoint.resolve() if checkpoint else None
+    load_model_runner()
     return app
 
 

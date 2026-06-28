@@ -79,7 +79,7 @@ const els = {
   splitterColBottom2: document.getElementById("splitter-col-bottom-2"),
   datasetSelect: document.getElementById("dataset-select"),
   btnReloadDataset: document.getElementById("btn-reload-dataset"),
-  datasetCount: document.getElementById("dataset-count"),
+  btnReloadModel: document.getElementById("btn-reload-model"),
   sampleIndex: document.getElementById("sample-index"),
   sampleId: document.getElementById("sample-id"),
   sampleCount: document.getElementById("sample-count"),
@@ -484,8 +484,6 @@ function updateDatasetUi(meta) {
   state.selectedDataset = meta.selected ?? null;
   populateDatasetSelect(meta.datasets ?? [], meta.selected);
   localStorage.setItem(STORAGE_KEYS.datasetName, meta.selected ?? "");
-  const ann = meta.annotations_file ? ` · ${meta.annotations_file}` : "";
-  els.datasetCount.textContent = `${state.total.toLocaleString()} samples${ann}`;
   els.sampleIndex.max = Math.max(0, state.total - 1);
   els.sampleCount.textContent = `/ ${state.total.toLocaleString()}`;
   setModelUi(meta.model);
@@ -534,6 +532,7 @@ async function selectDataset(name) {
   state.loading = true;
   els.datasetSelect.disabled = true;
   els.btnReloadDataset.disabled = true;
+  els.btnReloadModel.disabled = true;
   updateNavButtons();
   setStatus("Loading dataset…");
 
@@ -554,6 +553,7 @@ async function selectDataset(name) {
     state.loading = false;
     els.datasetSelect.disabled = false;
     els.btnReloadDataset.disabled = false;
+    els.btnReloadModel.disabled = false;
     updateNavButtons();
   }
 }
@@ -567,6 +567,7 @@ async function reloadDataset() {
   state.loading = true;
   els.datasetSelect.disabled = true;
   els.btnReloadDataset.disabled = true;
+  els.btnReloadModel.disabled = true;
   updateNavButtons();
   setStatus("Reloading dataset…");
 
@@ -588,6 +589,47 @@ async function reloadDataset() {
     state.loading = false;
     els.datasetSelect.disabled = false;
     els.btnReloadDataset.disabled = false;
+    els.btnReloadModel.disabled = false;
+    updateNavButtons();
+  }
+}
+
+async function reloadModel() {
+  if (state.loading) {
+    return;
+  }
+
+  state.loading = true;
+  els.datasetSelect.disabled = true;
+  els.btnReloadDataset.disabled = true;
+  els.btnReloadModel.disabled = true;
+  updateNavButtons();
+  setStatus("Reloading model…");
+
+  try {
+    const response = await fetch("/api/model/reload", { method: "POST" });
+    if (!response.ok) {
+      throw new Error(await readErrorResponse(response));
+    }
+
+    const meta = await response.json();
+    updateTrainingConfigUi(meta);
+    setModelUi(meta.model);
+    clearAiPrediction();
+    if (state.aiAutoRun && state.modelLoaded && state.total > 0) {
+      await runAiPrediction({ manageLoading: false });
+    }
+    const label = meta.model?.loaded
+      ? meta.model.checkpoint.split(/[/\\]/).pop()
+      : "no model";
+    setStatus(`Reloaded model: ${label}`);
+  } catch (error) {
+    reportError("Model reload failed", error.message, error);
+  } finally {
+    state.loading = false;
+    els.datasetSelect.disabled = false;
+    els.btnReloadDataset.disabled = false;
+    els.btnReloadModel.disabled = false;
     updateNavButtons();
   }
 }
@@ -1583,6 +1625,7 @@ async function init() {
 
 els.btnFirst.addEventListener("click", () => showSample(0));
 els.btnReloadDataset.addEventListener("click", () => reloadDataset());
+els.btnReloadModel.addEventListener("click", () => reloadModel());
 els.datasetSelect.addEventListener("change", () => {
   selectDataset(els.datasetSelect.value);
 });

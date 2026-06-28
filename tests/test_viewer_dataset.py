@@ -56,6 +56,29 @@ def test_create_app_requires_datasets(tmp_path) -> None:
         create_app(root)
 
 
+def test_api_model_reload(tmp_path) -> None:
+    root = tmp_path / "outputs"
+    _write_dataset(root / "run_a")
+
+    training_config = tmp_path / "training_config.yaml"
+    training_config.write_text("device: auto\n", encoding="utf-8")
+
+    app_module = sys.modules["app"]
+    app_module.training_config_path = training_config
+
+    app = create_app(root, initial="run_a", checkpoint=tmp_path / "missing.pth")
+    client = app.test_client()
+
+    meta = client.get("/api/meta").get_json()
+    assert meta["model"]["loaded"] is False
+
+    response = client.post("/api/model/reload")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["model"]["loaded"] is False
+    assert payload["selected"] == "run_a"
+
+
 def test_api_dataset_select(tmp_path) -> None:
     root = tmp_path / "outputs"
     _write_dataset(root / "run_a")
