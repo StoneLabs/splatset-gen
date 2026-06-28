@@ -222,6 +222,39 @@ h2 {
   flex-shrink: 0;
 }
 
+.panel-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.path-info-btn {
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.path-info-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.path-info-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .panel-header-actions {
   display: inline-flex;
   align-items: center;
