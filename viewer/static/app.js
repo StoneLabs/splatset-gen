@@ -10,6 +10,11 @@ const STORAGE_KEYS = {
   fitToPanel: "viewer-fit-to-panel",
   maskOpacity: "viewer-mask-opacity",
   datasetName: "viewer-dataset-name",
+  aiOutputFormat: "viewer-ai-output-format",
+  aiDisplayMode: "viewer-ai-display-mode",
+  aiComposeMode: "viewer-ai-compose-mode",
+  aiMaskOpacity: "viewer-ai-mask-opacity",
+  aiAutoRun: "viewer-ai-auto-run",
 };
 
 const LAYOUT_LIMITS = {
@@ -58,6 +63,7 @@ const state = {
   imageCache: null,
   selectedDataset: null,
   mediaGeneration: 0,
+  aiAutoRun: false,
 };
 
 const els = {
@@ -304,6 +310,42 @@ function saveLayoutPrefs() {
   localStorage.setItem(STORAGE_KEYS.maskOpacity, String(state.maskOpacity));
 }
 
+const AI_FORMATS = new Set(["alpha", "binary"]);
+const AI_DISPLAY_MODES = new Set(["raw", "compare"]);
+const AI_COMPOSE_MODES = new Set(["mask", "overlay", "split"]);
+
+function loadAiPrefs() {
+  const outputFormat = localStorage.getItem(STORAGE_KEYS.aiOutputFormat);
+  const displayMode = localStorage.getItem(STORAGE_KEYS.aiDisplayMode);
+  const composeMode = localStorage.getItem(STORAGE_KEYS.aiComposeMode);
+  const maskOpacity = Number.parseFloat(localStorage.getItem(STORAGE_KEYS.aiMaskOpacity));
+  const autoRun = localStorage.getItem(STORAGE_KEYS.aiAutoRun);
+
+  if (AI_FORMATS.has(outputFormat)) {
+    state.aiOutputFormat = outputFormat;
+  }
+  if (AI_DISPLAY_MODES.has(displayMode)) {
+    state.aiDisplayMode = displayMode;
+  }
+  if (AI_COMPOSE_MODES.has(composeMode)) {
+    state.aiComposeMode = composeMode;
+  }
+  if (!Number.isNaN(maskOpacity)) {
+    state.aiMaskOpacity = clamp(maskOpacity, 0, 1);
+  }
+  if (autoRun !== null) {
+    state.aiAutoRun = autoRun === "true";
+  }
+}
+
+function saveAiPrefs() {
+  localStorage.setItem(STORAGE_KEYS.aiOutputFormat, state.aiOutputFormat);
+  localStorage.setItem(STORAGE_KEYS.aiDisplayMode, state.aiDisplayMode);
+  localStorage.setItem(STORAGE_KEYS.aiComposeMode, state.aiComposeMode);
+  localStorage.setItem(STORAGE_KEYS.aiMaskOpacity, String(state.aiMaskOpacity));
+  localStorage.setItem(STORAGE_KEYS.aiAutoRun, String(state.aiAutoRun));
+}
+
 function applyLayout() {
   const topWeight = state.rowRatio;
   const bottomWeight = 1 - state.rowRatio;
@@ -436,7 +478,7 @@ function updateDatasetUi(meta) {
   setModelUi(meta.model);
 }
 
-async function applyDatasetMeta(meta) {
+async function applyDatasetMeta(meta, { autoRunAi = false } = {}) {
   updateDatasetUi(meta);
   updateTrainingConfigUi(meta);
 
@@ -465,6 +507,9 @@ async function applyDatasetMeta(meta) {
   }
 
   await fetchAndRenderSample(0);
+  if (autoRunAi && state.aiAutoRun && state.modelLoaded) {
+    await runAiPrediction({ manageLoading: false });
+  }
   setStatus(`Loaded ${meta.selected}`);
 }
 
@@ -489,7 +534,7 @@ async function selectDataset(name) {
       throw new Error(await readErrorResponse(response));
     }
 
-    await applyDatasetMeta(await response.json());
+    await applyDatasetMeta(await response.json(), { autoRunAi: true });
   } catch (error) {
     reportError("Dataset switch failed", error.message, error);
   } finally {
@@ -522,7 +567,7 @@ async function reloadDataset() {
       throw new Error(await readErrorResponse(response));
     }
 
-    await applyDatasetMeta(await response.json());
+    await applyDatasetMeta(await response.json(), { autoRunAi: true });
     setStatus(`Reloaded ${name}`);
   } catch (error) {
     reportError("Dataset reload failed", error.message, error);
@@ -1003,8 +1048,11 @@ function setModelUi(model) {
   updateNavButtons();
 }
 
-async function runAiPrediction() {
-  if (state.loading || state.total === 0) {
+async function runAiPrediction({ manageLoading = true } = {}) {
+  if (state.total === 0) {
+    return;
+  }
+  if (manageLoading && state.loading) {
     return;
   }
 
@@ -1016,8 +1064,10 @@ async function runAiPrediction() {
     return;
   }
 
-  state.loading = true;
-  updateNavButtons();
+  if (manageLoading) {
+    state.loading = true;
+    updateNavButtons();
+  }
   setStatus("Running AI prediction…");
 
   try {
@@ -1066,10 +1116,8 @@ async function runAiPrediction() {
       binF1: Number.parseFloat(response.headers.get("X-AI-Bin-F1") ?? ""),
     };
     state.aiAlphaImage = loadedImage;
-    state.aiOutputFormat = "alpha";
-    state.aiDisplayMode = "raw";
-    state.aiComposeMode = "mask";
-    state.aiMaskOpacity = state.maskOpacity;
+    state.aiAutoRun = true;
+    saveAiPrefs();
     applyAiMaskOpacityUi();
     els.aiPlaceholder.hidden = true;
     updateAiMetricsUi();
@@ -1078,8 +1126,10 @@ async function runAiPrediction() {
   } catch (error) {
     reportError("AI prediction failed", error.message, error);
   } finally {
-    state.loading = false;
-    updateNavButtons();
+    if (manageLoading) {
+      state.loading = false;
+      updateNavButtons();
+    }
   }
 }
 
@@ -1221,7 +1271,11 @@ async function showSample(index) {
 
   try {
     const record = await fetchAndRenderSample(clamped);
-    setStatus(`Sample ${state.index + 1} · id ${record.id}`);
+    if (state.aiAutoRun && state.modelLoaded) {
+      await runAiPrediction({ manageLoading: false });
+    } else {
+      setStatus(`Sample ${state.index + 1} · id ${record.id}`);
+    }
   } catch (error) {
     reportError("Sample load failed", error.message, error);
   } finally {
@@ -1393,10 +1447,12 @@ function startDrag(splitter, onMove) {
 
 async function init() {
   loadLayoutPrefs();
+  loadAiPrefs();
   applyLayout();
   applyFitMode();
   applyMaskOpacityUi();
   applyAiMaskOpacityUi();
+  updateAiControlUi();
   setupPanelZoomControls();
   setupSplitters();
 
@@ -1452,6 +1508,7 @@ els.maskOpacity.addEventListener("input", () => {
 els.aiMaskOpacity.addEventListener("input", () => {
   state.aiMaskOpacity = Number.parseInt(els.aiMaskOpacity.value, 10) / 100;
   applyAiMaskOpacityUi();
+  saveAiPrefs();
   if (
     state.aiAlphaImage &&
     (state.aiComposeMode === "overlay" || state.aiComposeMode === "split")
@@ -1523,6 +1580,7 @@ for (const button of els.aiFormatButtons) {
       return;
     }
     state.aiOutputFormat = button.dataset.aiFormat;
+    saveAiPrefs();
     renderAiPanelView();
   });
 }
@@ -1533,6 +1591,7 @@ for (const button of els.aiModeButtons) {
       return;
     }
     state.aiDisplayMode = button.dataset.aiMode;
+    saveAiPrefs();
     renderAiPanelView();
   });
 }
@@ -1543,6 +1602,7 @@ for (const button of els.aiComposeButtons) {
       return;
     }
     state.aiComposeMode = button.dataset.aiCompose;
+    saveAiPrefs();
     renderAiPanelView();
   });
 }
