@@ -28,9 +28,6 @@
         <button id="btn-last" type="button" title="Last sample (End)">▶|</button>
       </div>
       <div class="toolbar-group view-controls">
-        <button id="btn-run-ai" type="button" class="ghost" disabled title="Run segmentation model on current sample (P)">
-          Run AI
-        </button>
         <label class="checkbox-input" title="Scale images to fill panel instead of native pixel size">
           <input id="fit-to-panel" type="checkbox" checked />
           <span>Fit images to panel</span>
@@ -47,7 +44,11 @@
             <span id="click-label" class="chip"></span>
           </header>
           <div class="panel-body image-panel fit-mode" id="render-panel">
-            <canvas id="render-canvas"></canvas>
+            <div class="panel-viewport" data-zoom-panel="render">
+              <div class="panel-viewport-content" data-zoom-content="render">
+                <canvas id="render-canvas"></canvas>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -60,36 +61,30 @@
           tabindex="0"
         ></div>
 
-        <section class="panel" aria-label="Object mask">
+        <section class="panel" aria-label="Ground truth mask">
           <header>
             <h2>Mask</h2>
             <span id="object-label" class="chip"></span>
           </header>
           <div class="panel-body image-panel fit-mode" id="mask-panel">
-            <img id="mask-image" alt="Segmentation mask" />
-          </div>
-        </section>
-
-        <div
-          class="splitter splitter-v"
-          id="splitter-col-overlay"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize mask and overlay columns"
-          tabindex="0"
-        ></div>
-
-        <section class="panel" aria-label="Mask overlay on render">
-          <header>
-            <h2>Overlay</h2>
-            <label class="overlay-control" title="Mask overlay opacity">
-              <span>Mask</span>
-              <input id="mask-opacity" type="range" min="0" max="100" value="50" />
-              <span id="mask-opacity-label" class="chip">50%</span>
-            </label>
-          </header>
-          <div class="panel-body image-panel fit-mode" id="overlay-panel">
-            <canvas id="overlay-canvas"></canvas>
+            <div class="panel-float-controls">
+              <div class="panel-segmented" role="group" aria-label="Mask view">
+                <button type="button" class="active" data-gt-view="mask">Mask</button>
+                <button type="button" data-gt-view="overlay">Overlay</button>
+                <button type="button" data-gt-view="split" title="Side-by-side mask and overlay">Side-by-Side</button>
+              </div>
+              <label class="panel-float-opacity" id="gt-overlay-opacity" hidden title="Mask overlay opacity">
+                <input id="mask-opacity" type="range" min="0" max="100" value="50" />
+                <span id="mask-opacity-label">50%</span>
+              </label>
+            </div>
+            <div class="panel-viewport" data-zoom-panel="mask">
+              <div class="panel-viewport-content" data-zoom-content="mask">
+                <img id="mask-image" alt="Segmentation mask" />
+                <canvas id="mask-overlay-canvas" hidden></canvas>
+                <canvas id="mask-split-canvas" hidden></canvas>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -98,7 +93,7 @@
           id="splitter-col-ai"
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize overlay and AI columns"
+          aria-label="Resize mask and AI columns"
           tabindex="0"
         ></div>
 
@@ -108,8 +103,44 @@
             <span id="ai-model-label" class="chip muted-chip">no model</span>
           </header>
           <div class="panel-body image-panel fit-mode" id="ai-panel">
-            <img id="ai-prediction-image" alt="AI prediction not generated yet" hidden />
+            <button
+              id="btn-run-ai"
+              type="button"
+              class="panel-float-run ghost"
+              disabled
+              title="Run segmentation model on current sample"
+            >
+              Run AI (P)
+            </button>
+            <div id="ai-panel-controls" class="panel-float-controls" hidden>
+              <div class="panel-segmented" role="group" aria-label="Output format">
+                <button type="button" class="active" data-ai-format="alpha">Alpha</button>
+                <button type="button" data-ai-format="binary">Binary</button>
+              </div>
+              <div class="panel-segmented" role="group" aria-label="Display mode">
+                <button type="button" class="active" data-ai-mode="raw">Raw</button>
+                <button type="button" data-ai-mode="compare">Compare</button>
+              </div>
+              <div class="panel-segmented" role="group" aria-label="AI composition" id="ai-compose-controls">
+                <button type="button" class="active" data-ai-compose="mask">Mask</button>
+                <button type="button" data-ai-compose="overlay">Overlay</button>
+                <button type="button" data-ai-compose="split" title="Side-by-side mask and overlay">Side-by-Side</button>
+              </div>
+              <label class="panel-float-opacity" id="ai-overlay-opacity" hidden title="AI overlay opacity">
+                <input id="ai-mask-opacity" type="range" min="0" max="100" value="50" />
+                <span id="ai-mask-opacity-label">50%</span>
+              </label>
+            </div>
+            <div class="panel-viewport" data-zoom-panel="ai">
+              <div class="panel-viewport-content" data-zoom-content="ai">
+                <img id="ai-prediction-image" alt="AI prediction not generated yet" hidden />
+                <canvas id="ai-prediction-canvas" hidden></canvas>
+              </div>
+            </div>
             <p id="ai-placeholder" class="panel-placeholder">Click Run AI to predict a mask for the current sample.</p>
+            <div id="ai-metrics-bar" class="image-panel-footer" hidden>
+              <span id="ai-f1-label" class="ai-f1-label">F1 —</span>
+            </div>
           </div>
         </section>
       </div>

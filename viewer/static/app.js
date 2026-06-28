@@ -13,6 +13,17 @@ const LAYOUT_LIMITS = {
   max: 0.7,
 };
 
+const ZOOM_LIMITS = {
+  min: 0.25,
+  max: 8,
+};
+
+const panelZoom = {
+  render: { scale: 1, panX: 0, panY: 0 },
+  mask: { scale: 1, panX: 0, panY: 0 },
+  ai: { scale: 1, panX: 0, panY: 0 },
+};
+
 const state = {
   total: 0,
   index: 0,
@@ -21,12 +32,20 @@ const state = {
   fitToPanel: true,
   rowRatio: 0.58,
   colRatio: 0.5,
-  topCol1: 0.24,
-  topCol2: 0.24,
-  topCol3: 0.24,
+  topCol1: 0.33,
+  topCol2: 0.34,
+  topCol3: 0.33,
   maskOpacity: 0.5,
+  gtViewMode: "mask",
   modelLoaded: false,
   aiPredictionUrl: null,
+  aiAlphaImage: null,
+  aiOutputFormat: "alpha",
+  aiDisplayMode: "raw",
+  aiComposeMode: "mask",
+  aiMaskOpacity: 0.5,
+  aiMaskThreshold: 0.5,
+  aiMetrics: null,
   imageCache: null,
 };
 
@@ -36,7 +55,6 @@ const els = {
   rowBottom: document.getElementById("row-bottom"),
   splitterRow: document.getElementById("splitter-row"),
   splitterCol: document.getElementById("splitter-col"),
-  splitterColOverlay: document.getElementById("splitter-col-overlay"),
   splitterColAi: document.getElementById("splitter-col-ai"),
   splitterColBottom: document.getElementById("splitter-col-bottom"),
   datasetPath: document.getElementById("dataset-path"),
@@ -50,12 +68,25 @@ const els = {
   renderCanvas: document.getElementById("render-canvas"),
   maskPanel: document.getElementById("mask-panel"),
   maskImage: document.getElementById("mask-image"),
-  overlayPanel: document.getElementById("overlay-panel"),
-  overlayCanvas: document.getElementById("overlay-canvas"),
+  maskOverlayCanvas: document.getElementById("mask-overlay-canvas"),
+  maskSplitCanvas: document.getElementById("mask-split-canvas"),
+  gtViewButtons: [...document.querySelectorAll("[data-gt-view]")],
+  gtOverlayOpacity: document.getElementById("gt-overlay-opacity"),
   aiPanel: document.getElementById("ai-panel"),
   aiPredictionImage: document.getElementById("ai-prediction-image"),
+  aiPredictionCanvas: document.getElementById("ai-prediction-canvas"),
   aiPlaceholder: document.getElementById("ai-placeholder"),
   aiModelLabel: document.getElementById("ai-model-label"),
+  aiPanelControls: document.getElementById("ai-panel-controls"),
+  aiFormatButtons: [...document.querySelectorAll("[data-ai-format]")],
+  aiModeButtons: [...document.querySelectorAll("[data-ai-mode]")],
+  aiMetricsBar: document.getElementById("ai-metrics-bar"),
+  aiF1Label: document.getElementById("ai-f1-label"),
+  aiComposeButtons: [...document.querySelectorAll("[data-ai-compose]")],
+  aiComposeControls: document.getElementById("ai-compose-controls"),
+  aiOverlayOpacity: document.getElementById("ai-overlay-opacity"),
+  aiMaskOpacity: document.getElementById("ai-mask-opacity"),
+  aiMaskOpacityLabel: document.getElementById("ai-mask-opacity-label"),
   maskOpacity: document.getElementById("mask-opacity"),
   maskOpacityLabel: document.getElementById("mask-opacity-label"),
   annotationJson: document.getElementById("annotation-json"),
@@ -74,6 +105,93 @@ const els = {
   errorDialogClose: document.getElementById("error-dialog-close"),
   errorDialogOk: document.getElementById("error-dialog-ok"),
 };
+
+function resetPanelZoom(panelId) {
+  panelZoom[panelId] = { scale: 1, panX: 0, panY: 0 };
+  applyPanelZoom(panelId);
+}
+
+function resetAllPanelZoom() {
+  for (const panelId of Object.keys(panelZoom)) {
+    resetPanelZoom(panelId);
+  }
+}
+
+function applyPanelZoom(panelId) {
+  const content = document.querySelector(`[data-zoom-content="${panelId}"]`);
+  if (!content) {
+    return;
+  }
+  const { scale, panX, panY } = panelZoom[panelId];
+  content.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+}
+
+function setupPanelZoom(viewport, panelId) {
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  let startPanX = 0;
+  let startPanY = 0;
+
+  viewport.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+      const zoom = panelZoom[panelId];
+      const rect = viewport.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const cursorY = event.clientY - rect.top;
+      const factor = Math.exp(-event.deltaY * 0.0015);
+      const nextScale = clamp(zoom.scale * factor, ZOOM_LIMITS.min, ZOOM_LIMITS.max);
+      const ratio = nextScale / zoom.scale;
+      zoom.panX = cursorX - ratio * (cursorX - zoom.panX);
+      zoom.panY = cursorY - ratio * (cursorY - zoom.panY);
+      zoom.scale = nextScale;
+      applyPanelZoom(panelId);
+    },
+    { passive: false },
+  );
+
+  viewport.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    dragging = true;
+    viewport.classList.add("dragging");
+    startX = event.clientX;
+    startY = event.clientY;
+    startPanX = panelZoom[panelId].panX;
+    startPanY = panelZoom[panelId].panY;
+    event.preventDefault();
+  });
+
+  window.addEventListener("mousemove", (event) => {
+    if (!dragging) {
+      return;
+    }
+    panelZoom[panelId].panX = startPanX + (event.clientX - startX);
+    panelZoom[panelId].panY = startPanY + (event.clientY - startY);
+    applyPanelZoom(panelId);
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (!dragging) {
+      return;
+    }
+    dragging = false;
+    viewport.classList.remove("dragging");
+  });
+
+  viewport.addEventListener("dblclick", () => {
+    resetPanelZoom(panelId);
+  });
+}
+
+function setupPanelZoomControls() {
+  for (const viewport of document.querySelectorAll("[data-zoom-panel]")) {
+    setupPanelZoom(viewport, viewport.dataset.zoomPanel);
+  }
+}
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -113,6 +231,12 @@ function loadLayoutPrefs() {
   if (!Number.isNaN(topCol3)) {
     state.topCol3 = topCol3;
   }
+  const legacySum = state.topCol1 + state.topCol2 + state.topCol3;
+  if (legacySum > 0 && legacySum < 0.95) {
+    const legacyAi = 1 - legacySum;
+    state.topCol2 = state.topCol2 + state.topCol3;
+    state.topCol3 = legacyAi;
+  }
   if (fit !== null) {
     state.fitToPanel = fit === "true";
   }
@@ -125,9 +249,9 @@ function loadLayoutPrefs() {
 
 function normalizeTopColumns() {
   const min = LAYOUT_LIMITS.min;
-  state.topCol1 = clamp(state.topCol1, min, 1 - 3 * min);
-  state.topCol2 = clamp(state.topCol2, min, 1 - state.topCol1 - 2 * min);
-  state.topCol3 = clamp(state.topCol3, min, 1 - state.topCol1 - state.topCol2 - min);
+  state.topCol1 = clamp(state.topCol1, min, 1 - 2 * min);
+  state.topCol2 = clamp(state.topCol2, min, 1 - state.topCol1 - min);
+  state.topCol3 = clamp(1 - state.topCol1 - state.topCol2, min, 1 - state.topCol1 - min);
 }
 
 function saveLayoutPrefs() {
@@ -150,11 +274,9 @@ function applyLayout() {
   els.rowBottom.style.flex = `${bottomWeight} 1 0%`;
 
   const topPanels = getRowPanels(els.rowTop);
-  const topCol4 = 1 - state.topCol1 - state.topCol2 - state.topCol3;
   topPanels[0].style.flex = `${state.topCol1} 1 0%`;
   topPanels[1].style.flex = `${state.topCol2} 1 0%`;
   topPanels[2].style.flex = `${state.topCol3} 1 0%`;
-  topPanels[3].style.flex = `${topCol4} 1 0%`;
 
   const bottomPanels = getRowPanels(els.rowBottom);
   bottomPanels[0].style.flex = `${leftWeight} 1 0%`;
@@ -163,7 +285,7 @@ function applyLayout() {
 
 function applyFitMode() {
   const modeClass = state.fitToPanel ? "fit-mode" : "native-mode";
-  for (const panel of [els.renderPanel, els.maskPanel, els.overlayPanel, els.aiPanel]) {
+  for (const panel of [els.renderPanel, els.maskPanel, els.aiPanel]) {
     panel.classList.remove("fit-mode", "native-mode");
     panel.classList.add(modeClass);
   }
@@ -174,6 +296,12 @@ function applyMaskOpacityUi() {
   const percent = Math.round(state.maskOpacity * 100);
   els.maskOpacity.value = String(percent);
   els.maskOpacityLabel.textContent = `${percent}%`;
+}
+
+function applyAiMaskOpacityUi() {
+  const percent = Math.round(state.aiMaskOpacity * 100);
+  els.aiMaskOpacity.value = String(percent);
+  els.aiMaskOpacityLabel.textContent = `${percent}%`;
 }
 
 function setStatus(text) {
@@ -229,18 +357,454 @@ function updateNavButtons() {
   els.btnRunAi.disabled = state.loading || state.total === 0;
 }
 
+function formatMetric(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "—";
+  }
+  return value.toFixed(3);
+}
+
+function updateAiMetricsUi() {
+  if (!state.aiMetrics) {
+    els.aiMetricsBar.hidden = true;
+    els.aiF1Label.textContent = "F1 —";
+    return;
+  }
+
+  const { softF1, binF1 } = state.aiMetrics;
+  els.aiF1Label.innerHTML =
+    `soft F1 <strong>${formatMetric(softF1)}</strong> · bin F1 ${formatMetric(binF1)}`;
+  els.aiMetricsBar.hidden = false;
+}
+
+function readGrayscaleFromImage(img) {
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0);
+  const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const gray = new Uint8Array(canvas.width * canvas.height);
+  for (let i = 0; i < gray.length; i += 1) {
+    gray[i] = pixels[i * 4];
+  }
+  return gray;
+}
+
+function updateAiControlUi() {
+  const hasPrediction = Boolean(state.aiAlphaImage);
+  els.aiPanelControls.hidden = !hasPrediction;
+
+  for (const button of els.aiFormatButtons) {
+    const active = button.dataset.aiFormat === state.aiOutputFormat;
+    button.classList.toggle("active", active);
+    button.disabled = !hasPrediction;
+  }
+
+  for (const button of els.aiModeButtons) {
+    const active = button.dataset.aiMode === state.aiDisplayMode;
+    button.classList.toggle("active", active);
+    button.disabled = !hasPrediction;
+  }
+
+  els.aiComposeControls.hidden = !hasPrediction;
+  for (const button of els.aiComposeButtons) {
+    const active = button.dataset.aiCompose === state.aiComposeMode;
+    button.classList.toggle("active", active);
+    button.disabled = !hasPrediction;
+  }
+
+  const showAiOverlayOpacity =
+    hasPrediction && (state.aiComposeMode === "overlay" || state.aiComposeMode === "split");
+  els.aiOverlayOpacity.hidden = !showAiOverlayOpacity;
+}
+
+function updateGtControlUi() {
+  const hasSample = Boolean(state.imageCache);
+  for (const button of els.gtViewButtons) {
+    const active = button.dataset.gtView === state.gtViewMode;
+    button.classList.toggle("active", active);
+    button.disabled = !hasSample;
+  }
+  els.gtOverlayOpacity.hidden = !hasSample || (state.gtViewMode !== "overlay" && state.gtViewMode !== "split");
+}
+
+function renderSideBySideCanvas(canvas, leftImage, rightImage) {
+  const width = leftImage.naturalWidth || leftImage.width;
+  const height = leftImage.naturalHeight || leftImage.height;
+  canvas.width = width * 2;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(leftImage, 0, 0, width, height);
+  ctx.drawImage(rightImage, width, 0, width, height);
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+  ctx.lineWidth = Math.max(1, Math.round(width * 0.004));
+  ctx.beginPath();
+  ctx.moveTo(width + 0.5, 0);
+  ctx.lineTo(width + 0.5, height);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function thresholdMaskCanvas(sourceImage, threshold) {
+  const canvas = document.createElement("canvas");
+  canvas.width = sourceImage.naturalWidth || sourceImage.width;
+  canvas.height = sourceImage.naturalHeight || sourceImage.height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(sourceImage, 0, 0);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const cutoff = Math.round(threshold * 255);
+  for (let i = 0; i < imageData.data.length; i += 4) {
+    const value = imageData.data[i] > cutoff ? 255 : 0;
+    imageData.data[i] = value;
+    imageData.data[i + 1] = value;
+    imageData.data[i + 2] = value;
+    imageData.data[i + 3] = 255;
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+function getAiMaskSource() {
+  if (!state.aiAlphaImage) {
+    return null;
+  }
+  if (state.aiOutputFormat === "alpha") {
+    return state.aiAlphaImage;
+  }
+  return thresholdMaskCanvas(state.aiAlphaImage, state.aiMaskThreshold);
+}
+
+function setGtContentVisibility(mode) {
+  els.maskImage.hidden = mode !== "mask";
+  els.maskOverlayCanvas.hidden = mode !== "overlay";
+  els.maskSplitCanvas.hidden = mode !== "split";
+}
+
+function setAiContentVisibility({ showImage, showCanvas }) {
+  els.aiPredictionImage.hidden = !showImage;
+  els.aiPredictionCanvas.hidden = !showCanvas;
+}
+
+function renderMaskOverlayOnCanvas(canvas, rgbImage, maskImage, opacity) {
+  const ctx = canvas.getContext("2d");
+  const width = rgbImage.naturalWidth;
+  const height = rgbImage.naturalHeight;
+
+  canvas.width = width;
+  canvas.height = height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(rgbImage, 0, 0);
+
+  const maskCanvas = document.createElement("canvas");
+  maskCanvas.width = width;
+  maskCanvas.height = height;
+  const maskCtx = maskCanvas.getContext("2d");
+  maskCtx.drawImage(maskImage, 0, 0);
+
+  const maskPixels = maskCtx.getImageData(0, 0, width, height);
+  const overlayPixels = maskCtx.createImageData(width, height);
+  const alphaScale = opacity * 255;
+
+  for (let i = 0; i < maskPixels.data.length; i += 4) {
+    const maskValue = maskPixels.data[i] / 255;
+    if (maskValue <= 0) {
+      continue;
+    }
+    overlayPixels.data[i] = 255;
+    overlayPixels.data[i + 1] = 0;
+    overlayPixels.data[i + 2] = 0;
+    overlayPixels.data[i + 3] = Math.round(maskValue * alphaScale);
+  }
+
+  maskCtx.putImageData(overlayPixels, 0, 0);
+  ctx.drawImage(maskCanvas, 0, 0);
+}
+
+function renderMaskOverlayFromGrayCanvas(canvas, rgbImage, grayCanvas, opacity) {
+  renderMaskOverlayOnCanvas(canvas, rgbImage, grayCanvas, opacity);
+}
+
+function renderAiOverlayView() {
+  const rgbImage = state.imageCache?.rgbImage;
+  if (!rgbImage || !state.aiAlphaImage) {
+    return;
+  }
+
+  if (state.aiOutputFormat === "binary") {
+    const thresholded = thresholdMaskCanvas(state.aiAlphaImage, state.aiMaskThreshold);
+    renderMaskOverlayFromGrayCanvas(
+      els.aiPredictionCanvas,
+      rgbImage,
+      thresholded,
+      state.aiMaskOpacity,
+    );
+    return;
+  }
+
+  renderMaskOverlayOnCanvas(
+    els.aiPredictionCanvas,
+    rgbImage,
+    state.aiAlphaImage,
+    state.aiMaskOpacity,
+  );
+}
+
+function renderAiBinaryView() {
+  const img = state.aiAlphaImage;
+  if (!img) {
+    return;
+  }
+
+  const canvas = els.aiPredictionCanvas;
+  const thresholded = thresholdMaskCanvas(img, state.aiMaskThreshold);
+  canvas.width = thresholded.width;
+  canvas.height = thresholded.height;
+  canvas.getContext("2d").drawImage(thresholded, 0, 0);
+}
+
+function renderAiSplitView() {
+  const rgbImage = state.imageCache?.rgbImage;
+  const maskSource = getAiMaskSource();
+  if (!rgbImage || !maskSource) {
+    return;
+  }
+
+  const overlayCanvas = document.createElement("canvas");
+  renderMaskOverlayOnCanvas(overlayCanvas, rgbImage, maskSource, state.aiMaskOpacity);
+  renderSideBySideCanvas(els.aiPredictionCanvas, maskSource, overlayCanvas);
+}
+
+function renderGtSplitView() {
+  const { rgbImage, maskImage } = state.imageCache;
+  const overlayCanvas = document.createElement("canvas");
+  renderMaskOverlayOnCanvas(overlayCanvas, rgbImage, maskImage, state.maskOpacity);
+  renderSideBySideCanvas(els.maskSplitCanvas, maskImage, overlayCanvas);
+}
+
+function setComparePixel(imageData, offset, red, green, blue) {
+  imageData.data[offset] = red;
+  imageData.data[offset + 1] = green;
+  imageData.data[offset + 2] = blue;
+  imageData.data[offset + 3] = 255;
+}
+
+function renderBinaryComparePixel(imageData, offset, predObject, gtObject) {
+  if (predObject && gtObject) {
+    setComparePixel(imageData, offset, 56, 203, 92);
+  } else if (!predObject && !gtObject) {
+    setComparePixel(imageData, offset, 0, 0, 0);
+  } else if (!predObject && gtObject) {
+    setComparePixel(imageData, offset, 255, 255, 255);
+  } else {
+    setComparePixel(imageData, offset, 235, 64, 64);
+  }
+}
+
+function renderAlphaComparePixel(imageData, offset, predA, gtA) {
+  const overlap = Math.min(predA, gtA);
+  const fnAmount = Math.max(0, gtA - predA);
+  const fpAmount = Math.max(0, predA - gtA);
+
+  if (overlap < 0.01 && fnAmount < 0.01 && fpAmount < 0.01) {
+    setComparePixel(imageData, offset, 0, 0, 0);
+    return;
+  }
+
+  const red = Math.min(255, Math.round(fpAmount * 235 + fnAmount * 255));
+  const green = Math.min(255, Math.round(overlap * 203 + fnAmount * 255));
+  const blue = Math.min(255, Math.round(overlap * 92 + fnAmount * 255));
+  setComparePixel(imageData, offset, red, green, blue);
+}
+
+function renderCompareMapOnCanvas(canvas) {
+  const predImg = state.aiAlphaImage;
+  const gtImg = state.imageCache?.maskImage;
+  if (!predImg || !gtImg) {
+    return null;
+  }
+
+  const width = predImg.naturalWidth;
+  const height = predImg.naturalHeight;
+  const predGray = readGrayscaleFromImage(predImg);
+  const gtGray = readGrayscaleFromImage(gtImg);
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  const imageData = ctx.createImageData(width, height);
+  const cutoff = Math.round(state.aiMaskThreshold * 255);
+  const binaryCompare = state.aiOutputFormat === "binary";
+
+  for (let i = 0; i < predGray.length; i += 1) {
+    const offset = i * 4;
+    if (binaryCompare) {
+      renderBinaryComparePixel(
+        imageData,
+        offset,
+        predGray[i] > cutoff,
+        gtGray[i] > cutoff,
+      );
+    } else {
+      renderAlphaComparePixel(
+        imageData,
+        offset,
+        predGray[i] / 255,
+        gtGray[i] / 255,
+      );
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+function renderAiCompareView() {
+  renderCompareMapOnCanvas(els.aiPredictionCanvas);
+}
+
+function renderAiCompareOverlayView() {
+  const rgbImage = state.imageCache?.rgbImage;
+  if (!rgbImage) {
+    return;
+  }
+
+  const compareCanvas = document.createElement("canvas");
+  if (!renderCompareMapOnCanvas(compareCanvas)) {
+    return;
+  }
+
+  const canvas = els.aiPredictionCanvas;
+  const ctx = canvas.getContext("2d");
+  canvas.width = rgbImage.naturalWidth;
+  canvas.height = rgbImage.naturalHeight;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(rgbImage, 0, 0);
+  ctx.globalAlpha = state.aiMaskOpacity;
+  ctx.drawImage(compareCanvas, 0, 0);
+  ctx.globalAlpha = 1;
+}
+
+function renderAiCompareSplitView() {
+  const rgbImage = state.imageCache?.rgbImage;
+  if (!rgbImage) {
+    return;
+  }
+
+  const compareCanvas = document.createElement("canvas");
+  if (!renderCompareMapOnCanvas(compareCanvas)) {
+    return;
+  }
+
+  const overlayCanvas = document.createElement("canvas");
+  overlayCanvas.width = rgbImage.naturalWidth;
+  overlayCanvas.height = rgbImage.naturalHeight;
+  const ctx = overlayCanvas.getContext("2d");
+  ctx.drawImage(rgbImage, 0, 0);
+  ctx.globalAlpha = state.aiMaskOpacity;
+  ctx.drawImage(compareCanvas, 0, 0);
+  ctx.globalAlpha = 1;
+
+  renderSideBySideCanvas(els.aiPredictionCanvas, compareCanvas, overlayCanvas);
+}
+
+function renderAiPanelView() {
+  if (!state.aiAlphaImage) {
+    setAiContentVisibility({ showImage: false, showCanvas: false });
+    updateAiControlUi();
+    return;
+  }
+
+  updateAiControlUi();
+
+  if (state.aiDisplayMode === "compare") {
+    if (state.aiComposeMode === "overlay") {
+      renderAiCompareOverlayView();
+    } else if (state.aiComposeMode === "split") {
+      renderAiCompareSplitView();
+    } else {
+      renderAiCompareView();
+    }
+    setAiContentVisibility({ showImage: false, showCanvas: true });
+    return;
+  }
+
+  if (state.aiComposeMode === "overlay") {
+    renderAiOverlayView();
+    setAiContentVisibility({ showImage: false, showCanvas: true });
+    return;
+  }
+
+  if (state.aiComposeMode === "split") {
+    renderAiSplitView();
+    setAiContentVisibility({ showImage: false, showCanvas: true });
+    return;
+  }
+
+  if (state.aiOutputFormat === "alpha") {
+    setAiContentVisibility({ showImage: true, showCanvas: false });
+    return;
+  }
+
+  renderAiBinaryView();
+  setAiContentVisibility({ showImage: false, showCanvas: true });
+}
+
+function renderGtPanelView() {
+  if (!state.imageCache) {
+    setGtContentVisibility("mask");
+    els.maskImage.hidden = true;
+    els.maskOverlayCanvas.hidden = true;
+    els.maskSplitCanvas.hidden = true;
+    updateGtControlUi();
+    return;
+  }
+
+  updateGtControlUi();
+
+  if (state.gtViewMode === "overlay") {
+    renderMaskOverlayOnCanvas(
+      els.maskOverlayCanvas,
+      state.imageCache.rgbImage,
+      state.imageCache.maskImage,
+      state.maskOpacity,
+    );
+    setGtContentVisibility("overlay");
+    return;
+  }
+
+  if (state.gtViewMode === "split") {
+    renderGtSplitView();
+    setGtContentVisibility("split");
+    return;
+  }
+
+  setGtContentVisibility("mask");
+}
+
 function clearAiPrediction() {
   if (state.aiPredictionUrl) {
     URL.revokeObjectURL(state.aiPredictionUrl);
     state.aiPredictionUrl = null;
   }
+  state.aiAlphaImage = null;
+  state.aiMetrics = null;
   els.aiPredictionImage.removeAttribute("src");
-  els.aiPredictionImage.hidden = true;
+  setAiContentVisibility({ showImage: false, showCanvas: false });
   els.aiPlaceholder.hidden = false;
+  updateAiMetricsUi();
+  renderAiPanelView();
 }
 
 function setModelUi(model) {
   state.modelLoaded = Boolean(model?.loaded);
+  if (typeof model?.threshold === "number") {
+    state.aiMaskThreshold = model.threshold;
+  }
   if (state.modelLoaded) {
     const name = model.checkpoint.split(/[/\\]/).pop();
     els.aiModelLabel.textContent = `${name} · ep ${model.epoch}`;
@@ -281,10 +845,10 @@ async function runAiPrediction() {
 
     clearAiPrediction();
     const objectUrl = URL.createObjectURL(blob);
-    await new Promise((resolve, reject) => {
+    const loadedImage = await new Promise((resolve, reject) => {
       const onLoad = () => {
         cleanup();
-        resolve();
+        resolve(els.aiPredictionImage);
       };
       const onError = () => {
         cleanup();
@@ -304,8 +868,25 @@ async function runAiPrediction() {
       }
     });
 
-    els.aiPredictionImage.hidden = false;
+    const thresholdHeader = response.headers.get("X-AI-Threshold");
+    const parsedThreshold = Number.parseFloat(thresholdHeader ?? "");
+    if (!Number.isNaN(parsedThreshold)) {
+      state.aiMaskThreshold = parsedThreshold;
+    }
+
+    state.aiMetrics = {
+      softF1: Number.parseFloat(response.headers.get("X-AI-Soft-F1") ?? ""),
+      binF1: Number.parseFloat(response.headers.get("X-AI-Bin-F1") ?? ""),
+    };
+    state.aiAlphaImage = loadedImage;
+    state.aiOutputFormat = "alpha";
+    state.aiDisplayMode = "raw";
+    state.aiComposeMode = "mask";
+    state.aiMaskOpacity = state.maskOpacity;
+    applyAiMaskOpacityUi();
     els.aiPlaceholder.hidden = true;
+    updateAiMetricsUi();
+    renderAiPanelView();
     setStatus(`AI prediction ready · sample ${state.index + 1}`);
   } catch (error) {
     reportError("AI prediction failed", error.message, error);
@@ -374,42 +955,6 @@ async function renderImageWithCross(rgbImage, point) {
   drawCross(ctx, x, y, canvas.width, canvas.height);
 }
 
-function renderMaskOverlay(rgbImage, maskImage, opacity) {
-  const canvas = els.overlayCanvas;
-  const ctx = canvas.getContext("2d");
-  const width = rgbImage.naturalWidth;
-  const height = rgbImage.naturalHeight;
-
-  canvas.width = width;
-  canvas.height = height;
-  ctx.clearRect(0, 0, width, height);
-  ctx.drawImage(rgbImage, 0, 0);
-
-  const maskCanvas = document.createElement("canvas");
-  maskCanvas.width = width;
-  maskCanvas.height = height;
-  const maskCtx = maskCanvas.getContext("2d");
-  maskCtx.drawImage(maskImage, 0, 0);
-
-  const maskPixels = maskCtx.getImageData(0, 0, width, height);
-  const overlayPixels = maskCtx.createImageData(width, height);
-  const alphaScale = opacity * 255;
-
-  for (let i = 0; i < maskPixels.data.length; i += 4) {
-    const maskValue = maskPixels.data[i] / 255;
-    if (maskValue <= 0) {
-      continue;
-    }
-    overlayPixels.data[i] = 255;
-    overlayPixels.data[i + 1] = 0;
-    overlayPixels.data[i + 2] = 0;
-    overlayPixels.data[i + 3] = Math.round(maskValue * alphaScale);
-  }
-
-  maskCtx.putImageData(overlayPixels, 0, 0);
-  ctx.drawImage(maskCanvas, 0, 0);
-}
-
 async function loadSampleImages(imagePath, maskPath) {
   const cacheKey = `${state.index}:${imagePath}:${maskPath}`;
   if (state.imageCache?.key === cacheKey) {
@@ -428,11 +973,18 @@ async function loadSampleImages(imagePath, maskPath) {
   return state.imageCache;
 }
 
-function refreshOverlay() {
+function refreshGtPanel() {
   if (!state.imageCache) {
     return;
   }
-  renderMaskOverlay(state.imageCache.rgbImage, state.imageCache.maskImage, state.maskOpacity);
+  renderGtPanelView();
+}
+
+function refreshAiPanel() {
+  if (!state.aiAlphaImage) {
+    return;
+  }
+  renderAiPanelView();
 }
 
 async function showSample(index) {
@@ -451,6 +1003,7 @@ async function showSample(index) {
     state.index = payload.index;
     state.imageCache = null;
     clearAiPrediction();
+    resetAllPanelZoom();
 
     els.sampleIndex.value = String(state.index);
     els.sampleId.value = record.id;
@@ -463,7 +1016,7 @@ async function showSample(index) {
     const images = await loadSampleImages(record.image, record.mask);
     renderImageWithCross(images.rgbImage, record.point);
     els.maskImage.src = `/media/${record.mask}?t=${state.index}`;
-    renderMaskOverlay(images.rgbImage, images.maskImage, state.maskOpacity);
+    renderGtPanelView();
     els.annotationJson.textContent = JSON.stringify(record, null, 2);
 
     setStatus(`Sample ${state.index + 1} · id ${record.id}`);
@@ -491,8 +1044,7 @@ async function jumpToId(sampleId) {
 function setupSplitters() {
   bindRowSplitter(els.splitterRow, els.workspace);
   bindTopColumnSplitter(els.splitterCol, 0);
-  bindTopColumnSplitter(els.splitterColOverlay, 1);
-  bindTopColumnSplitter(els.splitterColAi, 2);
+  bindTopColumnSplitter(els.splitterColAi, 1);
   bindBottomColumnSplitter(els.splitterColBottom, els.rowBottom);
 }
 
@@ -525,21 +1077,14 @@ function bindTopColumnSplitter(splitter, splitterIndex) {
     const ratio = clamp(x / available, LAYOUT_LIMITS.min, 1 - 2 * LAYOUT_LIMITS.min);
 
     if (splitterIndex === 0) {
-      state.topCol1 = clamp(ratio, LAYOUT_LIMITS.min, 1 - 3 * LAYOUT_LIMITS.min);
-    } else if (splitterIndex === 1) {
-      const combined = clamp(
-        ratio,
-        state.topCol1 + LAYOUT_LIMITS.min,
-        1 - 2 * LAYOUT_LIMITS.min,
-      );
-      state.topCol2 = combined - state.topCol1;
+      state.topCol1 = clamp(ratio, LAYOUT_LIMITS.min, 1 - 2 * LAYOUT_LIMITS.min);
     } else {
       const combined = clamp(
         ratio,
-        state.topCol1 + state.topCol2 + LAYOUT_LIMITS.min,
+        state.topCol1 + LAYOUT_LIMITS.min,
         1 - LAYOUT_LIMITS.min,
       );
-      state.topCol3 = combined - state.topCol1 - state.topCol2;
+      state.topCol2 = combined - state.topCol1;
     }
 
     normalizeTopColumns();
@@ -607,6 +1152,8 @@ async function init() {
   applyLayout();
   applyFitMode();
   applyMaskOpacityUi();
+  applyAiMaskOpacityUi();
+  setupPanelZoomControls();
   setupSplitters();
 
   try {
@@ -657,15 +1204,39 @@ els.sampleId.addEventListener("keydown", (event) => {
 els.fitToPanel.addEventListener("change", () => {
   state.fitToPanel = els.fitToPanel.checked;
   applyFitMode();
+  resetAllPanelZoom();
   saveLayoutPrefs();
 });
 
 els.maskOpacity.addEventListener("input", () => {
   state.maskOpacity = Number.parseInt(els.maskOpacity.value, 10) / 100;
   applyMaskOpacityUi();
-  refreshOverlay();
+  if (state.gtViewMode === "overlay" || state.gtViewMode === "split") {
+    refreshGtPanel();
+  }
   saveLayoutPrefs();
 });
+
+els.aiMaskOpacity.addEventListener("input", () => {
+  state.aiMaskOpacity = Number.parseInt(els.aiMaskOpacity.value, 10) / 100;
+  applyAiMaskOpacityUi();
+  if (
+    state.aiAlphaImage &&
+    (state.aiComposeMode === "overlay" || state.aiComposeMode === "split")
+  ) {
+    refreshAiPanel();
+  }
+});
+
+for (const button of els.gtViewButtons) {
+  button.addEventListener("click", () => {
+    if (!state.imageCache) {
+      return;
+    }
+    state.gtViewMode = button.dataset.gtView;
+    renderGtPanelView();
+  });
+}
 
 document.addEventListener("keydown", (event) => {
   if (event.target.matches("input, textarea")) {
@@ -709,6 +1280,36 @@ els.btnCopyConfig.addEventListener("click", () => {
 els.btnRunAi.addEventListener("click", () => {
   runAiPrediction();
 });
+
+for (const button of els.aiFormatButtons) {
+  button.addEventListener("click", () => {
+    if (!state.aiAlphaImage) {
+      return;
+    }
+    state.aiOutputFormat = button.dataset.aiFormat;
+    renderAiPanelView();
+  });
+}
+
+for (const button of els.aiModeButtons) {
+  button.addEventListener("click", () => {
+    if (!state.aiAlphaImage) {
+      return;
+    }
+    state.aiDisplayMode = button.dataset.aiMode;
+    renderAiPanelView();
+  });
+}
+
+for (const button of els.aiComposeButtons) {
+  button.addEventListener("click", () => {
+    if (!state.aiAlphaImage) {
+      return;
+    }
+    state.aiComposeMode = button.dataset.aiCompose;
+    renderAiPanelView();
+  });
+}
 
 for (const btn of [els.errorDialogClose, els.errorDialogOk]) {
   btn.addEventListener("click", hideErrorDialog);
