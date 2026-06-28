@@ -218,7 +218,7 @@ class ModelRunner:
         )
         height, width = pred_u8.shape
         strength = None
-        if output_format == "alpha" and background == "transparent":
+        if output_format == "alpha":
             pred_a = pred_plane.astype(np.float32) / 255.0
             gt_a = gt_plane.astype(np.float32) / 255.0
             overlap = np.minimum(pred_a, gt_a)
@@ -229,7 +229,17 @@ class ModelRunner:
         if background == "black":
             out = np.zeros((height, width, 3), dtype=np.uint8)
             for kind_id, color in ((1, COMPARE_COLORS["tp"]), (2, COMPARE_COLORS["fp"]), (3, COMPARE_COLORS["fn"])):
-                out[kinds == kind_id] = color
+                mask = kinds == kind_id
+                if not np.any(mask):
+                    continue
+                if strength is None:
+                    out[mask] = color
+                else:
+                    out[mask] = np.clip(
+                        np.round(strength[mask, None] * color),
+                        0,
+                        255,
+                    ).astype(np.uint8)
             return out, "RGB"
 
         out = np.zeros((height, width, 4), dtype=np.uint8)

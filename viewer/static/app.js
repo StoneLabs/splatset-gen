@@ -784,17 +784,46 @@ function classifyComparePixel(pred, gt) {
   return { kind, strength, overlap, fnAmount, fpAmount };
 }
 
+function fillCompareBlackBackground(data) {
+  for (let offset = 0; offset < data.length; offset += 4) {
+    setCanvasPixel(data, offset, 0, 0, 0, 255);
+  }
+}
+
 /** Compare map: saturated TP/FP/FN hues, alpha from soft strength (mask) or blended RGB (overlay). */
 function writeComparePixel(data, offset, pixel, { blackBackground, opacity, overlayStyle = false }) {
   if (pixel.kind === "tn") {
-    if (blackBackground) {
-      setCanvasPixel(data, offset, 0, 0, 0, 255);
-    }
     return;
   }
 
-  const binary = state.aiOutputFormat === "binary";
   const [hueR, hueG, hueB] = AI_COMPARE_COLORS[pixel.kind];
+  const binary = state.aiOutputFormat === "binary";
+
+  if (blackBackground && !overlayStyle) {
+    if (binary) {
+      const alpha = Math.round(255 * opacity);
+      if (alpha > 0) {
+        setCanvasPixel(data, offset, hueR, hueG, hueB, alpha);
+      }
+      return;
+    }
+
+    const strength = pixel.strength ?? 0;
+    const blend = strength * opacity;
+    if (blend <= 0) {
+      return;
+    }
+    // putImageData does not blend within the bitmap — composite soft alpha onto black here.
+    setCanvasPixel(
+      data,
+      offset,
+      Math.round(hueR * blend),
+      Math.round(hueG * blend),
+      Math.round(hueB * blend),
+      255,
+    );
+    return;
+  }
 
   if (binary) {
     const alpha = Math.round(255 * opacity);
@@ -826,6 +855,10 @@ function buildCompareImageData({ blackBackground, opacity, overlayStyle = false 
   const gt = readAlphaPlane(state.imageCache.maskImage);
   const imageData = new ImageData(pred.width, pred.height);
   const data = imageData.data;
+
+  if (blackBackground && !overlayStyle) {
+    fillCompareBlackBackground(data);
+  }
 
   for (let i = 0; i < pred.plane.length; i += 1) {
     writeComparePixel(data, i * 4, classifyComparePixel(pred.plane[i], gt.plane[i]), {
