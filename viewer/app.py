@@ -182,6 +182,8 @@ def _dataset_meta(ds: DatasetIndex) -> dict:
     return {
         "dataset_dir": str(ds.dataset_dir),
         "annotations_file": ds.annotations_path.name,
+        "annotations_path": str(ds.annotations_path),
+        "config_path": str(ds.config_path),
         "count": ds.count,
         "has_config": ds.config_path.is_file(),
         "model": _model_meta(),

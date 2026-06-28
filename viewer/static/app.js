@@ -126,6 +126,9 @@ const els = {
   btnCopyJson: document.getElementById("btn-copy-json"),
   btnCopyConfig: document.getElementById("btn-copy-config"),
   btnCopyTrainingConfig: document.getElementById("btn-copy-training-config"),
+  infoAnnotationPath: document.getElementById("btn-info-annotation"),
+  infoConfigPath: document.getElementById("btn-info-config"),
+  infoTrainingConfigPath: document.getElementById("btn-info-training-config"),
   btnRunAi: document.getElementById("btn-run-ai"),
   errorDialogBackdrop: document.getElementById("error-dialog-backdrop"),
   errorDialogTitle: document.getElementById("error-dialog-title"),
@@ -450,6 +453,33 @@ async function readErrorResponse(response) {
   return `Request failed: ${response.status}`;
 }
 
+function setPathInfoButton(button, path, label) {
+  if (!button) {
+    return;
+  }
+  if (path) {
+    button.disabled = false;
+    button.title = path;
+    button.dataset.path = path;
+    button.setAttribute("aria-label", `Copy ${label} path`);
+  } else {
+    button.disabled = true;
+    button.title = `${label} path unavailable`;
+    delete button.dataset.path;
+    button.setAttribute("aria-label", `${label} path unavailable`);
+  }
+}
+
+function updateBottomPanelPaths(meta) {
+  setPathInfoButton(els.infoAnnotationPath, meta.annotations_path, "annotation file");
+  setPathInfoButton(els.infoConfigPath, meta.config_path, "dataset creation config");
+  setPathInfoButton(
+    els.infoTrainingConfigPath,
+    meta.training_config?.path ?? null,
+    "training / inference config",
+  );
+}
+
 function updateTrainingConfigUi(meta) {
   const tc = meta.training_config ?? {};
   state.hasTrainingConfig = true;
@@ -479,6 +509,7 @@ function updateDatasetUi(meta) {
   els.sampleIndex.max = Math.max(0, state.total - 1);
   els.sampleCount.textContent = `/ ${state.total.toLocaleString()}`;
   setModelUi(meta.model);
+  updateBottomPanelPaths(meta);
 }
 
 async function applyDatasetMeta(meta, { autoRunAi = false } = {}) {
@@ -606,6 +637,7 @@ async function reloadModel() {
 
     const meta = await response.json();
     updateTrainingConfigUi(meta);
+    updateBottomPanelPaths(meta);
     setModelUi(meta.model);
     clearAiPrediction();
     if (state.aiAutoRun && state.modelLoaded && state.total > 0) {
@@ -1749,6 +1781,20 @@ els.btnCopyConfig.addEventListener("click", () => {
 els.btnCopyTrainingConfig.addEventListener("click", () => {
   copyText(state.trainingConfigYaml, "training / inference config");
 });
+
+for (const [button, label] of [
+  [els.infoAnnotationPath, "annotation file"],
+  [els.infoConfigPath, "dataset creation config"],
+  [els.infoTrainingConfigPath, "training / inference config"],
+]) {
+  button.addEventListener("click", () => {
+    const path = button.dataset.path;
+    if (!path) {
+      return;
+    }
+    copyText(path, `${label} path`);
+  });
+}
 
 els.aiModelLabel.addEventListener("click", () => {
   if (!state.modelLoaded) {
