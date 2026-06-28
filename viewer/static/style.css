@@ -96,6 +96,7 @@ h2 {
 
 .index-input,
 .id-input,
+.dataset-select,
 .checkbox-input {
   display: inline-flex;
   align-items: center;
@@ -125,6 +126,42 @@ h2 {
 .id-input input {
   width: 7.5rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.dataset-select select {
+  min-width: min(18rem, 34vw);
+  max-width: min(28rem, 42vw);
+  border: 1px solid var(--panel-border);
+  background: var(--code-bg);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
+  font: inherit;
+}
+
+.dataset-select select:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.dataset-controls button {
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.45rem 0.7rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.dataset-controls button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dataset-controls button:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .overlay-control {

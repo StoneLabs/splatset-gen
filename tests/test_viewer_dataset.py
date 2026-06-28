@@ -1,0 +1,90 @@
+"""Tests for viewer datasets root discovery and selection."""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+VIEWER_DIR = Path(__file__).resolve().parent.parent / "viewer"
+sys.path.insert(0, str(VIEWER_DIR))
+
+from app import create_app, discover_datasets, resolve_datasets_root  # noqa: E402
+
+
+def _write_dataset(path: Path, sample_id: str = "000001") -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "annotations.jsonl").write_text(
+        json.dumps(
+            {
+                "id": sample_id,
+                "image": "images/000001.png",
+                "mask": "masks/000001.png",
+                "point": [1, 2],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_resolve_datasets_root_relative(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "outputs"
+    root.mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert resolve_datasets_root("outputs") == root.resolve()
+
+
+def test_discover_datasets_finds_runs(tmp_path) -> None:
+    root = tmp_path / "outputs"
+    _write_dataset(root / "run_a")
+    _write_dataset(root / "run_b", sample_id="000002")
+    (root / "not_a_dataset").mkdir()
+
+    found = discover_datasets(root)
+    assert [item["name"] for item in found] == ["run_a", "run_b"]
+    assert found[0]["count"] == 1
+    assert found[1]["count"] == 1
+
+
+def test_create_app_requires_datasets(tmp_path) -> None:
+    root = tmp_path / "empty"
+    root.mkdir()
+    with pytest.raises(SystemExit, match="No datasets found"):
+        create_app(root)
+
+
+def test_api_dataset_select(tmp_path) -> None:
+    root = tmp_path / "outputs"
+    _write_dataset(root / "run_a")
+    _write_dataset(root / "run_b")
+
+    training_config = tmp_path / "training_config.yaml"
+    training_config.write_text("device: auto\n", encoding="utf-8")
+
+    app_module = sys.modules["app"]
+    app_module.training_config_path = training_config
+
+    app = create_app(root, initial="run_a")
+    client = app.test_client()
+
+    meta = client.get("/api/meta").get_json()
+    assert meta["datasets_root"] == str(root.resolve())
+    assert [item["name"] for item in meta["datasets"]] == ["run_a", "run_b"]
+    assert meta["selected"] == "run_a"
+    assert meta["training_config"]["path"] == str(training_config.resolve())
+
+    response = client.post("/api/dataset/select", json={"name": "run_b"})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["selected"] == "run_b"
+    assert payload["count"] == 1
+
+    reloaded = client.post("/api/dataset/reload", json={"name": "run_b"})
+    assert reloaded.status_code == 200
+    assert reloaded.get_json()["selected"] == "run_b"
+
+    bad = client.post("/api/dataset/select", json={"name": "missing"})
+    assert bad.status_code == 400

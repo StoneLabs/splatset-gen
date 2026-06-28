@@ -14,9 +14,10 @@ from flask import Flask, abort, jsonify, render_template, request, send_file
 from werkzeug.exceptions import HTTPException
 from PIL import Image
 
-from dataset_index import DatasetIndex
+from dataset_index import DatasetIndex, find_annotations_path
 
 VIEWER_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = VIEWER_DIR.parent
 TRAIN_DIR = VIEWER_DIR.parent / "train"
 if str(TRAIN_DIR) not in sys.path:
     sys.path.insert(0, str(TRAIN_DIR))
@@ -32,12 +33,148 @@ app = Flask(
 )
 index: DatasetIndex | None = None
 model_runner: ModelRunner | None = None
+datasets_root: Path | None = None
+dataset_catalog: list[dict] = []
+selected_dataset_name: str | None = None
+training_config_path: Path | None = None
 
 
 def _require_index() -> DatasetIndex:
     if index is None:
         abort(500, description="Dataset index not initialized")
     return index
+
+
+def resolve_datasets_root(raw: str) -> Path:
+    """Resolve a directory that contains one or more dataset subfolders."""
+    text = raw.strip()
+    if not text:
+        raise ValueError("datasets_dir is required")
+
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        candidate = path.resolve()
+    else:
+        candidate = None
+        for base in (Path.cwd(), PROJECT_ROOT):
+            probe = (base / path).resolve()
+            if probe.is_dir():
+                candidate = probe
+                break
+        if candidate is None:
+            candidate = (Path.cwd() / path).resolve()
+
+    if not candidate.is_dir():
+        raise FileNotFoundError(f"Datasets directory not found: {candidate}")
+    return candidate
+
+
+def count_annotation_lines(path: Path) -> int:
+    count = 0
+    with path.open("rb") as handle:
+        for line in handle:
+            if line.strip():
+                count += 1
+    return count
+
+
+def discover_datasets(root: Path) -> list[dict]:
+    """List immediate child folders that contain annotation files."""
+    items: list[dict] = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        try:
+            ann = find_annotations_path(entry)
+        except FileNotFoundError:
+            continue
+        items.append(
+            {
+                "name": entry.name,
+                "path": str(entry.resolve()),
+                "annotations_file": ann.name,
+                "count": count_annotation_lines(ann),
+            }
+        )
+    return items
+
+
+def dataset_dir_for_name(name: str) -> Path:
+    if datasets_root is None:
+        abort(500, description="Datasets root not initialized")
+
+    root = datasets_root.resolve()
+    candidate = (root / name).resolve()
+    if candidate.parent != root:
+        abort(400, description="Invalid dataset name")
+    find_annotations_path(candidate)
+    return candidate
+
+
+def load_dataset(dataset_dir: Path, *, use_cache: bool = True) -> DatasetIndex:
+    global index
+    ds = DatasetIndex(dataset_dir)
+    ds.build(use_cache=use_cache)
+    index = ds
+    return ds
+
+
+def refresh_dataset_catalog() -> list[dict]:
+    global dataset_catalog
+    if datasets_root is None:
+        abort(500, description="Datasets root not initialized")
+    dataset_catalog = discover_datasets(datasets_root)
+    return dataset_catalog
+
+
+def reload_dataset(*, name: str | None = None) -> DatasetIndex:
+    global selected_dataset_name
+    refresh_dataset_catalog()
+    target = name or selected_dataset_name
+    names = {item["name"] for item in dataset_catalog}
+    if target not in names:
+        if not dataset_catalog:
+            abort(400, description="No datasets found")
+        target = dataset_catalog[0]["name"]
+    selected_dataset_name = target
+    return load_dataset(dataset_dir_for_name(target), use_cache=False)
+
+
+def select_dataset(name: str) -> DatasetIndex:
+    global selected_dataset_name
+    if not any(item["name"] == name for item in dataset_catalog):
+        abort(400, description=f"Unknown dataset: {name}")
+    selected_dataset_name = name
+    return load_dataset(dataset_dir_for_name(name))
+
+
+def _training_config_meta() -> dict | None:
+    if training_config_path is None or not training_config_path.is_file():
+        return None
+    return {
+        "path": str(training_config_path),
+        "yaml": training_config_path.read_text(encoding="utf-8"),
+    }
+
+
+def _dataset_meta(ds: DatasetIndex) -> dict:
+    return {
+        "dataset_dir": str(ds.dataset_dir),
+        "annotations_file": ds.annotations_path.name,
+        "count": ds.count,
+        "has_config": ds.config_path.is_file(),
+        "model": _model_meta(),
+    }
+
+
+def _viewer_meta(ds: DatasetIndex) -> dict:
+    return {
+        "datasets_root": str(datasets_root) if datasets_root else None,
+        "datasets": dataset_catalog,
+        "selected": selected_dataset_name,
+        "training_config": _training_config_meta(),
+        **_dataset_meta(ds),
+    }
 
 
 def _model_meta() -> dict:
@@ -94,14 +231,34 @@ def home() -> str:
 @app.route("/api/meta")
 def api_meta():
     ds = _require_index()
-    return jsonify(
-        {
-            "dataset_dir": str(ds.dataset_dir),
-            "count": ds.count,
-            "has_config": ds.config_path.is_file(),
-            "model": _model_meta(),
-        }
-    )
+    return jsonify(_viewer_meta(ds))
+
+
+@app.route("/api/dataset/select", methods=["POST"])
+def api_dataset_select():
+    payload = request.get_json(silent=True) or {}
+    name = payload.get("name") or request.args.get("name")
+    if not name:
+        abort(400, description="name is required")
+
+    ds = select_dataset(str(name))
+    return jsonify(_viewer_meta(ds))
+
+
+@app.route("/api/dataset/reload", methods=["POST"])
+def api_dataset_reload():
+    payload = request.get_json(silent=True) or {}
+    name = payload.get("name") or selected_dataset_name
+    ds = reload_dataset(name=str(name) if name else None)
+    return jsonify(_viewer_meta(ds))
+
+
+@app.route("/api/training-config")
+def api_training_config():
+    meta = _training_config_meta()
+    if meta is None:
+        abort(404, description="No training config loaded")
+    return jsonify(meta)
 
 
 @app.route("/api/samples")
@@ -195,11 +352,30 @@ def media(rel_path: str):
     return send_file(path, mimetype=mime or "application/octet-stream", conditional=True)
 
 
-def create_app(dataset_dir: Path, checkpoint: Path | None = None) -> Flask:
-    global index, model_runner
-    ds = DatasetIndex(dataset_dir)
-    ds.build(use_cache=True)
-    index = ds
+def create_app(
+    datasets_dir: Path,
+    *,
+    initial: str | None = None,
+    checkpoint: Path | None = None,
+) -> Flask:
+    global index, model_runner, datasets_root, dataset_catalog, selected_dataset_name
+
+    root = resolve_datasets_root(str(datasets_dir))
+    datasets_root = root
+    dataset_catalog = discover_datasets(root)
+    if not dataset_catalog:
+        raise SystemExit(
+            f"No datasets found in {root} "
+            "(expected subfolders with annotations.jsonl or annotations_processed.jsonl)"
+        )
+
+    names = {item["name"] for item in dataset_catalog}
+    if initial and initial in names:
+        start_name = initial
+    else:
+        start_name = dataset_catalog[0]["name"]
+
+    select_dataset(start_name)
 
     model_runner = None
     ckpt = checkpoint or (
@@ -222,10 +398,17 @@ def create_app(dataset_dir: Path, checkpoint: Path | None = None) -> Flask:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Browse splat-proj dataset in the browser")
     parser.add_argument(
-        "--dataset",
+        "datasets_dir",
+        nargs="?",
         type=Path,
-        default=Path("outputs/run2"),
-        help="Path to generated dataset directory (contains annotations.jsonl)",
+        default=Path("outputs"),
+        help="Directory containing dataset folders (each with annotations.jsonl)",
+    )
+    parser.add_argument(
+        "--initial",
+        default=None,
+        metavar="NAME",
+        help="Initial dataset subfolder name (default: first alphabetically)",
     )
     parser.add_argument(
         "--model",
@@ -244,17 +427,22 @@ def main() -> None:
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
-    train_config.cfg = load_training_config(args.training_config)
+    global training_config_path
+    training_config_path = args.training_config.resolve()
+    train_config.cfg = load_training_config(training_config_path)
 
-    dataset_dir = args.dataset.resolve()
-    if not (dataset_dir / "annotations.jsonl").is_file():
-        raise SystemExit(f"Not a dataset directory (missing annotations.jsonl): {dataset_dir}")
+    try:
+        root = resolve_datasets_root(str(args.datasets_dir))
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
 
     checkpoint = args.model.resolve() if args.model else None
-    create_app(dataset_dir, checkpoint=checkpoint)
+    create_app(root, initial=args.initial, checkpoint=checkpoint)
 
     print(f"Dataset viewer: http://{args.host}:{args.port}")
-    print(f"Dataset: {dataset_dir} ({index.count if index else 0} samples)")
+    print(f"Datasets root: {root} ({len(dataset_catalog)} runs)")
+    if selected_dataset_name and index:
+        print(f"Active: {selected_dataset_name} ({index.count} samples)")
     if model_runner is not None:
         print(f"Model: {model_runner.meta['checkpoint']} (epoch {model_runner.meta['epoch']})")
     else:
