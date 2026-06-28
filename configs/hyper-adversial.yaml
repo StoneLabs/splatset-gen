@@ -27,7 +27,7 @@ camera:
 
 generation:
   max_camera_retries: 20
-  #max_gaussians_per_object: 25000
+  #max_gaussians_per_object: 100000
 
 augmentation:
   enabled: true
@@ -40,29 +40,29 @@ augmentation:
   lighting:
     enabled: true
     probability: 1
-    brightness_range: [-0.75, 0.75]
-    contrast_range: [0.25, 1.75]
-    gamma_range: [0.25, 1.75]
-    saturation_range: [0, 2]
-    warmth_range: [-1, 1]
+    brightness_range: [-0.25, 0.25]
+    contrast_range: [0.75, 1.25]
+    gamma_range: [0.75, 1.25]
+    saturation_range: [0, 1.25]
+    warmth_range: [-0.25, 0.25]
 
   blur:
     enabled: true
-    probability: 0.4
-    radius_range: [0.5, 5]
+    probability: 1
+    radius_range: [0.1, 10]
     motion_probability: 0.5
-    motion_length_range: [3, 15]
+    motion_length_range: [3, 30]
     motion_angle_range: [0, 180]
 
   tear:
-    enabled: true
+    enabled: false
     probability: 0.4
     num_bands_range: [2, 6]
     shift_range: [-5, 5]
     horizontal_probability: 0.5
 
   warp:
-    enabled: true
+    enabled: false
     probability: 0.3
     perspective:
       enabled: true
@@ -81,7 +81,7 @@ augmentation:
       translate_frac_range: [-0.04, 0.04]
 
   chromatic_aberration:
-    enabled: true
+    enabled: false
     probability: 0.4
     shift_range: [1, 4]
     horizontal_probability: 0.5
@@ -89,12 +89,12 @@ augmentation:
   noise:
     enabled: true
     probability: 1
-    std_range: [0.01, 0.06]
+    std_range: [0.01, 0.09]
 
   jpeg:
     enabled: true
     probability: 1
-    quality_range: [3, 100]
+    quality_range: [5, 100]
 
   vignette:
     enabled: true
