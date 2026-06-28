@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
 
 VIEWER_DIR = Path(__file__).resolve().parent.parent / "viewer"
 sys.path.insert(0, str(VIEWER_DIR))
@@ -84,12 +85,6 @@ def test_api_dataset_select(tmp_path) -> None:
     _write_dataset(root / "run_a")
     _write_dataset(root / "run_b")
 
-    training_config = tmp_path / "training_config.yaml"
-    training_config.write_text("device: auto\n", encoding="utf-8")
-
-    app_module = sys.modules["app"]
-    app_module.training_config_path = training_config
-
     app = create_app(root, initial="run_a")
     client = app.test_client()
 
@@ -97,7 +92,8 @@ def test_api_dataset_select(tmp_path) -> None:
     assert meta["datasets_root"] == str(root.resolve())
     assert [item["name"] for item in meta["datasets"]] == ["run_a", "run_b"]
     assert meta["selected"] == "run_a"
-    assert meta["training_config"]["path"] == str(training_config.resolve())
+    assert meta["training_config"]["found"] is False
+    assert meta["training_config"]["yaml"] == "training / inference config data not found"
 
     response = client.post("/api/dataset/select", json={"name": "run_b"})
     assert response.status_code == 200
@@ -111,3 +107,43 @@ def test_api_dataset_select(tmp_path) -> None:
 
     bad = client.post("/api/dataset/select", json={"name": "missing"})
     assert bad.status_code == 400
+
+
+def test_training_config_sidecar_from_checkpoint(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "outputs"
+    _write_dataset(root / "run_a")
+
+    train_dir = Path(__file__).resolve().parent.parent / "train"
+    sys.path.insert(0, str(train_dir))
+    from config import load_training_config  # noqa: E402
+    import config as train_config_mod  # noqa: E402
+    import train as train_mod  # noqa: E402
+
+    cfg = load_training_config(train_dir / "training_config.yaml")
+    monkeypatch.setattr(train_mod, "cfg", cfg)
+    monkeypatch.setattr(train_config_mod, "cfg", cfg)
+
+    ckpt_path = tmp_path / "model.pth"
+    model = train_mod.PointConditionedUNet()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    train_mod.save_checkpoint(
+        model,
+        optimizer,
+        12,
+        ckpt_path,
+        training_state={"best_val_loss": 0.11, "patience_counter": 0, "divergence_streak": 0, "prev_train_loss": 0.2},
+    )
+
+    sidecar = train_mod.checkpoint_config_path(ckpt_path)
+    sidecar.write_text("device: sidecar\n", encoding="utf-8")
+
+    app = create_app(root, initial="run_a", checkpoint=ckpt_path)
+    client = app.test_client()
+
+    meta = client.get("/api/meta").get_json()
+    assert meta["training_config"]["found"] is True
+    assert meta["training_config"]["yaml"] == "device: sidecar\n"
+    assert meta["training_config"]["path"] == str(sidecar.resolve())
+    assert meta["model"]["loaded"] is True
+    assert meta["model"]["epoch"] == 12
+    assert meta["model"]["metadata"]["training_state"]["best_val_loss"] == 0.11

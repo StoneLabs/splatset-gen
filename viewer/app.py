@@ -38,6 +38,7 @@ datasets_root: Path | None = None
 dataset_catalog: list[dict] = []
 selected_dataset_name: str | None = None
 training_config_path: Path | None = None
+TRAINING_CONFIG_NOT_FOUND = "training / inference config data not found"
 
 
 def _require_index() -> DatasetIndex:
@@ -149,12 +150,32 @@ def select_dataset(name: str) -> DatasetIndex:
     return load_dataset(dataset_dir_for_name(name))
 
 
-def _training_config_meta() -> dict | None:
-    if training_config_path is None or not training_config_path.is_file():
-        return None
+def _checkpoint_config_path(checkpoint_path: Path) -> Path:
+    return checkpoint_path.with_name(f"{checkpoint_path.stem}.config.yaml")
+
+
+def _active_checkpoint_path() -> Path | None:
+    if model_runner is not None:
+        return Path(model_runner.meta["checkpoint"])
+    return _resolve_checkpoint_path()
+
+
+def _training_config_meta() -> dict:
+    ckpt = _active_checkpoint_path()
+    if ckpt is None:
+        return {"path": None, "yaml": TRAINING_CONFIG_NOT_FOUND, "found": False}
+
+    config_path = _checkpoint_config_path(ckpt)
+    if config_path.is_file():
+        return {
+            "path": str(config_path),
+            "yaml": config_path.read_text(encoding="utf-8"),
+            "found": True,
+        }
     return {
-        "path": str(training_config_path),
-        "yaml": training_config_path.read_text(encoding="utf-8"),
+        "path": str(config_path),
+        "yaml": TRAINING_CONFIG_NOT_FOUND,
+        "found": False,
     }
 
 
@@ -220,6 +241,7 @@ def _model_meta() -> dict:
             "epoch": None,
             "device": None,
             "threshold": None,
+            "metadata": None,
         }
     return {
         "loaded": True,
@@ -227,6 +249,7 @@ def _model_meta() -> dict:
         "epoch": model_runner.meta["epoch"],
         "device": model_runner.meta["device"],
         "threshold": model_runner.mask_threshold,
+        "metadata": model_runner.meta,
     }
 
 
@@ -297,10 +320,7 @@ def api_model_reload():
 
 @app.route("/api/training-config")
 def api_training_config():
-    meta = _training_config_meta()
-    if meta is None:
-        abort(404, description="No training config loaded")
-    return jsonify(meta)
+    return jsonify(_training_config_meta())
 
 
 @app.route("/api/samples")

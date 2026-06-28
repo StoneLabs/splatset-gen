@@ -387,6 +387,21 @@ h2 {
   color: var(--muted);
 }
 
+.chip-button {
+  border: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.chip-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.chip-button:disabled {
+  cursor: default;
+}
+
 .nav-controls button:disabled,
 .ghost:disabled {
   opacity: 0.45;

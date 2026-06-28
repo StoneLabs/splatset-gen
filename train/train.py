@@ -376,6 +376,19 @@ def find_resume_checkpoint(checkpoint_dir):
     return None, None
 
 
+def checkpoint_config_path(checkpoint_path: str | os.PathLike) -> Path:
+    path = Path(checkpoint_path)
+    return path.with_name(f"{path.stem}.config.yaml")
+
+
+def save_checkpoint_config_snapshot(checkpoint_path: str | os.PathLike) -> None:
+    config_src = Path(cfg.CONFIG_PATH)
+    if not config_src.is_file():
+        return
+    dest = checkpoint_config_path(checkpoint_path)
+    dest.write_text(config_src.read_text(encoding="utf-8"), encoding="utf-8")
+
+
 def save_checkpoint(
     model,
     optimizer,
@@ -398,6 +411,7 @@ def save_checkpoint(
     if training_state is not None:
         payload["training_state"] = training_state
     torch.save(payload, path)
+    save_checkpoint_config_snapshot(path)
 
 
 def load_resume_checkpoint(path, model, optimizer, device, scaler=None):
