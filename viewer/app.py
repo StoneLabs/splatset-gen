@@ -9,6 +9,7 @@ import mimetypes
 import sys
 from pathlib import Path
 
+import numpy as np
 from flask import Flask, abort, jsonify, render_template, request, send_file
 from werkzeug.exceptions import HTTPException
 from PIL import Image
@@ -41,13 +42,48 @@ def _require_index() -> DatasetIndex:
 
 def _model_meta() -> dict:
     if model_runner is None:
-        return {"loaded": False, "checkpoint": None, "epoch": None, "device": None}
+        return {
+            "loaded": False,
+            "checkpoint": None,
+            "epoch": None,
+            "device": None,
+            "threshold": None,
+        }
     return {
         "loaded": True,
         "checkpoint": model_runner.meta["checkpoint"],
         "epoch": model_runner.meta["epoch"],
         "device": model_runner.meta["device"],
+        "threshold": model_runner.mask_threshold,
     }
+
+
+def _compute_alpha_metrics(
+    pred_u8: np.ndarray,
+    gt_u8: np.ndarray,
+    threshold: float,
+) -> dict[str, float]:
+    """Binary + soft alpha F1, matching train._batch_metrics_cpu on one sample."""
+    pred = pred_u8.astype(np.float32) / 255.0
+    gt = np.clip(gt_u8.astype(np.float32) / 255.0, 0.0, 1.0)
+    eps = 1e-6
+    smooth = 1.0
+
+    p_bin = pred > threshold
+    t_bin = gt > threshold
+    tp = float(np.logical_and(p_bin, t_bin).sum())
+    fp = float(np.logical_and(p_bin, ~t_bin).sum())
+    fn = float(np.logical_and(~p_bin, t_bin).sum())
+    prec = (tp + smooth) / (tp + fp + smooth)
+    rec = (tp + smooth) / (tp + fn + smooth)
+    bin_f1 = 2 * prec * rec / (prec + rec)
+
+    inter = float((pred * gt).sum())
+    alpha_sum = float(pred.sum())
+    gt_sum = float(gt.sum())
+    soft_f1 = (2 * inter + eps) / (alpha_sum + gt_sum + eps)
+
+    return {"bin_f1": bin_f1, "soft_f1": soft_f1}
 
 
 @app.route("/")
@@ -122,16 +158,23 @@ def api_predict(sample_index: int):
         abort(404, description=f"Sample index out of range: {sample_index}")
 
     image_path = ds.resolve_media_path(record["image"])
+    gt_path = ds.resolve_media_path(record["mask"])
     try:
-        mask = model_runner.predict_alpha(image_path, record["point"])
+        pred = model_runner.predict_alpha(image_path, record["point"])
+        gt = np.array(Image.open(gt_path).convert("L"))
+        metrics = _compute_alpha_metrics(pred, gt, model_runner.mask_threshold)
     except Exception as exc:
         print(f"Prediction error for sample {sample_index}: {exc}")
         return jsonify({"error": str(exc)}), 500
 
     buf = io.BytesIO()
-    Image.fromarray(mask, mode="L").save(buf, format="PNG")
+    Image.fromarray(pred, mode="L").save(buf, format="PNG")
     buf.seek(0)
-    return send_file(buf, mimetype="image/png", download_name=f"{record['id']}_ai.png")
+    response = send_file(buf, mimetype="image/png", download_name=f"{record['id']}_ai.png")
+    response.headers["X-AI-Bin-F1"] = f"{metrics['bin_f1']:.4f}"
+    response.headers["X-AI-Soft-F1"] = f"{metrics['soft_f1']:.4f}"
+    response.headers["X-AI-Threshold"] = str(model_runner.mask_threshold)
+    return response
 
 
 @app.errorhandler(HTTPException)
