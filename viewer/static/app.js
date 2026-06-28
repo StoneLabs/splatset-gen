@@ -637,7 +637,7 @@ function maskWeightFromPixel(pixels, pixelIndex, useAlphaChannel) {
   return value / 255;
 }
 
-function readAlphaFromImage(img) {
+function readAlphaPlane(img) {
   const canvas = document.createElement("canvas");
   canvas.width = img.naturalWidth;
   canvas.height = img.naturalHeight;
@@ -645,85 +645,46 @@ function readAlphaFromImage(img) {
   ctx.drawImage(img, 0, 0);
   const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
   const useAlphaChannel = imageDataUsesAlphaChannel(pixels);
-  const gray = new Uint8Array(canvas.width * canvas.height);
-  for (let i = 0; i < gray.length; i += 1) {
-    gray[i] = useAlphaChannel ? pixels[i * 4 + 3] : pixels[i * 4];
+  const plane = new Uint8Array(canvas.width * canvas.height);
+  for (let i = 0; i < plane.length; i += 1) {
+    plane[i] = useAlphaChannel ? pixels[i * 4 + 3] : pixels[i * 4];
   }
-  return gray;
+  return { plane, width: canvas.width, height: canvas.height };
 }
 
 function readGrayscaleFromImage(img) {
-  return readAlphaFromImage(img);
+  return readAlphaPlane(img).plane;
 }
 
-function updateAiControlUi() {
-  const hasPrediction = Boolean(state.aiAlphaImage);
-  els.aiPanelControls.hidden = !hasPrediction;
-
-  for (const button of els.aiFormatButtons) {
-    const active = button.dataset.aiFormat === state.aiOutputFormat;
-    button.classList.toggle("active", active);
-    button.disabled = !hasPrediction;
-  }
-
-  for (const button of els.aiModeButtons) {
-    const active = button.dataset.aiMode === state.aiDisplayMode;
-    button.classList.toggle("active", active);
-    button.disabled = !hasPrediction;
-  }
-
-  els.aiComposeControls.hidden = !hasPrediction;
-  for (const button of els.aiComposeButtons) {
-    const active = button.dataset.aiCompose === state.aiComposeMode;
-    button.classList.toggle("active", active);
-    button.disabled = !hasPrediction;
-  }
-
-  const showAiOverlayOpacity =
-    hasPrediction && (state.aiComposeMode === "overlay" || state.aiComposeMode === "split");
-  els.aiOverlayOpacity.hidden = !showAiOverlayOpacity;
-
-  const showMaskBackgroundToggle =
-    hasPrediction && state.aiComposeMode !== "overlay";
-  els.aiMaskBgControls.hidden = !showMaskBackgroundToggle;
-  for (const button of els.aiMaskBgButtons) {
-    const active =
-      button.dataset.aiMaskBg === (state.aiMaskBlackBackground ? "black" : "transparent");
-    button.classList.toggle("active", active);
-    button.disabled = !hasPrediction;
-  }
+function setCanvasPixel(data, offset, red, green, blue, alpha = 255) {
+  data[offset] = red;
+  data[offset + 1] = green;
+  data[offset + 2] = blue;
+  data[offset + 3] = alpha;
 }
 
-function updateGtControlUi() {
-  const hasSample = Boolean(state.imageCache);
-  for (const button of els.gtViewButtons) {
-    const active = button.dataset.gtView === state.gtViewMode;
-    button.classList.toggle("active", active);
-    button.disabled = !hasSample;
-  }
-  els.gtOverlayOpacity.hidden = !hasSample || (state.gtViewMode !== "overlay" && state.gtViewMode !== "split");
+function blitImageData(canvas, imageData) {
+  canvas.width = imageData.width;
+  canvas.height = imageData.height;
+  canvas.getContext("2d").putImageData(imageData, 0, 0);
 }
 
-function renderSideBySideCanvas(canvas, leftImage, rightImage) {
-  const width = leftImage.naturalWidth || leftImage.width;
-  const height = leftImage.naturalHeight || leftImage.height;
-  canvas.width = width * 2;
-  canvas.height = height;
-
-  const ctx = canvas.getContext("2d");
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(leftImage, 0, 0, width, height);
-  ctx.drawImage(rightImage, width, 0, width, height);
-
-  ctx.save();
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
-  ctx.lineWidth = Math.max(1, Math.round(width * 0.004));
-  ctx.beginPath();
-  ctx.moveTo(width + 0.5, 0);
-  ctx.lineTo(width + 0.5, height);
-  ctx.stroke();
-  ctx.restore();
+function composeRgbOverlay(outCanvas, rgbImage, overlayCanvas) {
+  const width = rgbImage.naturalWidth;
+  const height = rgbImage.naturalHeight;
+  outCanvas.width = width;
+  outCanvas.height = height;
+  const ctx = outCanvas.getContext("2d");
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(rgbImage, 0, 0);
+  ctx.drawImage(overlayCanvas, 0, 0);
 }
+
+const AI_COMPARE_COLORS = {
+  tp: [56, 203, 92],
+  fp: [235, 64, 64],
+  fn: [255, 255, 255],
+};
 
 function thresholdMaskCanvas(sourceImage, threshold) {
   const canvas = document.createElement("canvas");
@@ -756,7 +717,8 @@ function getAiMaskSource() {
   return thresholdMaskCanvas(state.aiAlphaImage, state.aiMaskThreshold);
 }
 
-function renderAiMaskOnCanvas(canvas, maskSource, { blackBackground = false } = {}) {
+/** Mask-only preview: clear = RGBA/transparent bg, black = white mask on #000. */
+function renderAiMaskPreview(canvas, maskSource, { blackBackground = false } = {}) {
   const width = maskSource.naturalWidth || maskSource.width;
   const height = maskSource.naturalHeight || maskSource.height;
   canvas.width = width;
@@ -769,25 +731,291 @@ function renderAiMaskOnCanvas(canvas, maskSource, { blackBackground = false } = 
     return;
   }
 
-  ctx.fillStyle = "#000000";
-  ctx.fillRect(0, 0, width, height);
-
   const sample = document.createElement("canvas");
   sample.width = width;
   sample.height = height;
-  sample.getContext("2d").drawImage(maskSource, 0, 0);
-  const pixels = sample.getContext("2d").getImageData(0, 0, width, height);
+  const sampleCtx = sample.getContext("2d");
+  sampleCtx.drawImage(maskSource, 0, 0);
+  const pixels = sampleCtx.getImageData(0, 0, width, height);
   const useAlphaChannel = imageDataUsesAlphaChannel(pixels.data);
   const out = ctx.createImageData(width, height);
   for (let i = 0; i < width * height; i += 1) {
     const offset = i * 4;
     const value = useAlphaChannel ? pixels.data[offset + 3] : pixels.data[offset];
-    out.data[offset] = value;
-    out.data[offset + 1] = value;
-    out.data[offset + 2] = value;
-    out.data[offset + 3] = 255;
+    setCanvasPixel(out.data, offset, value, value, value, 255);
   }
   ctx.putImageData(out, 0, 0);
+}
+
+function classifyComparePixel(pred, gt) {
+  const binary = state.aiOutputFormat === "binary";
+  const cutoff = Math.round(state.aiMaskThreshold * 255);
+  if (binary) {
+    const p = pred > cutoff;
+    const g = gt > cutoff;
+    if (p && g) {
+      return { kind: "tp" };
+    }
+    if (!p && !g) {
+      return { kind: "tn" };
+    }
+    if (!p && g) {
+      return { kind: "fn" };
+    }
+    return { kind: "fp" };
+  }
+
+  const predA = pred / 255;
+  const gtA = gt / 255;
+  const overlap = Math.min(predA, gtA);
+  const fnAmount = Math.max(0, gtA - predA);
+  const fpAmount = Math.max(0, predA - gtA);
+  const strength = Math.max(overlap, fnAmount, fpAmount);
+  if (strength < 0.01) {
+    return { kind: "tn", strength: 0, overlap, fnAmount, fpAmount };
+  }
+
+  let kind = "tp";
+  if (fpAmount >= overlap && fpAmount >= fnAmount) {
+    kind = "fp";
+  } else if (fnAmount >= overlap && fnAmount >= fpAmount) {
+    kind = "fn";
+  }
+  return { kind, strength, overlap, fnAmount, fpAmount };
+}
+
+/** Compare map: saturated TP/FP/FN hues, alpha from soft strength (mask) or blended RGB (overlay). */
+function writeComparePixel(data, offset, pixel, { blackBackground, opacity, overlayStyle = false }) {
+  if (pixel.kind === "tn") {
+    if (blackBackground) {
+      setCanvasPixel(data, offset, 0, 0, 0, 255);
+    }
+    return;
+  }
+
+  const binary = state.aiOutputFormat === "binary";
+  const [hueR, hueG, hueB] = AI_COMPARE_COLORS[pixel.kind];
+
+  if (binary) {
+    const alpha = Math.round(255 * opacity);
+    if (alpha > 0) {
+      setCanvasPixel(data, offset, hueR, hueG, hueB, alpha);
+    }
+    return;
+  }
+
+  const { strength, overlap, fnAmount, fpAmount } = pixel;
+  const alpha = Math.round(strength * 255 * opacity);
+  if (alpha <= 0) {
+    return;
+  }
+
+  if (overlayStyle) {
+    const red = Math.min(255, Math.round(fpAmount * 235 + fnAmount * 255));
+    const green = Math.min(255, Math.round(overlap * 203 + fnAmount * 255));
+    const blue = Math.min(255, Math.round(overlap * 92 + fnAmount * 255));
+    setCanvasPixel(data, offset, red, green, blue, alpha);
+    return;
+  }
+
+  setCanvasPixel(data, offset, hueR, hueG, hueB, alpha);
+}
+
+function buildCompareImageData({ blackBackground, opacity, overlayStyle = false }) {
+  const pred = readAlphaPlane(state.aiAlphaImage);
+  const gt = readAlphaPlane(state.imageCache.maskImage);
+  const imageData = new ImageData(pred.width, pred.height);
+  const data = imageData.data;
+
+  for (let i = 0; i < pred.plane.length; i += 1) {
+    writeComparePixel(data, i * 4, classifyComparePixel(pred.plane[i], gt.plane[i]), {
+      blackBackground,
+      opacity,
+      overlayStyle,
+    });
+  }
+
+  return imageData;
+}
+
+function renderAiComposedView(canvas, { drawMask, drawOverlay }) {
+  const rgbImage = state.imageCache?.rgbImage;
+  const { aiComposeMode, aiMaskBlackBackground, aiMaskOpacity } = state;
+
+  if (aiComposeMode === "overlay") {
+    if (!rgbImage) {
+      return;
+    }
+    const overlayCanvas = document.createElement("canvas");
+    drawOverlay(overlayCanvas, { opacity: aiMaskOpacity });
+    composeRgbOverlay(canvas, rgbImage, overlayCanvas);
+    return;
+  }
+
+  if (aiComposeMode === "split") {
+    if (!rgbImage) {
+      return;
+    }
+    const maskPane = document.createElement("canvas");
+    drawMask(maskPane, { blackBackground: aiMaskBlackBackground, opacity: 1 });
+    const overlayPane = document.createElement("canvas");
+    drawOverlay(overlayPane, { opacity: aiMaskOpacity });
+    const rgbOverlay = document.createElement("canvas");
+    composeRgbOverlay(rgbOverlay, rgbImage, overlayPane);
+    renderSideBySideCanvas(canvas, maskPane, rgbOverlay);
+    return;
+  }
+
+  drawMask(canvas, { blackBackground: aiMaskBlackBackground, opacity: 1 });
+}
+
+function renderAiRawView(canvas) {
+  const maskSource = getAiMaskSource();
+  const rgbImage = state.imageCache?.rgbImage;
+  if (!maskSource) {
+    return;
+  }
+
+  renderAiComposedView(canvas, {
+    drawMask(target, { blackBackground }) {
+      renderAiMaskPreview(target, maskSource, { blackBackground });
+    },
+    drawOverlay(target, { opacity }) {
+      if (!rgbImage) {
+        return;
+      }
+      renderMaskOverlayOnCanvas(target, rgbImage, maskSource, opacity);
+    },
+  });
+}
+
+function renderAiCompareView(canvas) {
+  if (!state.imageCache?.maskImage) {
+    return;
+  }
+
+  renderAiComposedView(canvas, {
+    drawMask(target, { blackBackground, opacity }) {
+      blitImageData(target, buildCompareImageData({
+        blackBackground,
+        opacity,
+        overlayStyle: false,
+      }));
+    },
+    drawOverlay(target, { opacity }) {
+      blitImageData(target, buildCompareImageData({
+        blackBackground: false,
+        opacity,
+        overlayStyle: true,
+      }));
+    },
+  });
+}
+
+function renderAiPanelView() {
+  if (!state.aiAlphaImage) {
+    setAiContentVisibility({ showImage: false, showCanvas: false });
+    updateAiControlUi();
+    return;
+  }
+
+  updateAiControlUi();
+
+  if (state.aiDisplayMode === "compare") {
+    renderAiCompareView(els.aiPredictionCanvas);
+  } else {
+    renderAiRawView(els.aiPredictionCanvas);
+  }
+
+  setAiContentVisibility({ showImage: false, showCanvas: true });
+}
+
+function syncSegmentedButtons(buttons, isActive, disabled) {
+  for (const button of buttons) {
+    button.classList.toggle("active", isActive(button));
+    button.disabled = disabled;
+  }
+}
+
+function bindAiPanelButtons(buttons, onSelect) {
+  for (const button of buttons) {
+    button.addEventListener("click", () => {
+      if (!state.aiAlphaImage) {
+        return;
+      }
+      onSelect(button);
+      saveAiPrefs();
+      renderAiPanelView();
+    });
+  }
+}
+
+function updateAiControlUi() {
+  const hasPrediction = Boolean(state.aiAlphaImage);
+  els.aiPanelControls.hidden = !hasPrediction;
+
+  syncSegmentedButtons(
+    els.aiFormatButtons,
+    (button) => button.dataset.aiFormat === state.aiOutputFormat,
+    !hasPrediction,
+  );
+  syncSegmentedButtons(
+    els.aiModeButtons,
+    (button) => button.dataset.aiMode === state.aiDisplayMode,
+    !hasPrediction,
+  );
+
+  els.aiComposeControls.hidden = !hasPrediction;
+  syncSegmentedButtons(
+    els.aiComposeButtons,
+    (button) => button.dataset.aiCompose === state.aiComposeMode,
+    !hasPrediction,
+  );
+
+  const showAiOverlayOpacity =
+    hasPrediction && (state.aiComposeMode === "overlay" || state.aiComposeMode === "split");
+  els.aiOverlayOpacity.hidden = !showAiOverlayOpacity;
+
+  const showMaskBackgroundToggle =
+    hasPrediction && state.aiComposeMode !== "overlay";
+  els.aiMaskBgControls.hidden = !showMaskBackgroundToggle;
+  syncSegmentedButtons(
+    els.aiMaskBgButtons,
+    (button) =>
+      button.dataset.aiMaskBg === (state.aiMaskBlackBackground ? "black" : "transparent"),
+    !hasPrediction,
+  );
+}
+
+function updateGtControlUi() {
+  const hasSample = Boolean(state.imageCache);
+  for (const button of els.gtViewButtons) {
+    const active = button.dataset.gtView === state.gtViewMode;
+    button.classList.toggle("active", active);
+    button.disabled = !hasSample;
+  }
+  els.gtOverlayOpacity.hidden = !hasSample || (state.gtViewMode !== "overlay" && state.gtViewMode !== "split");
+}
+
+function renderSideBySideCanvas(canvas, leftImage, rightImage) {
+  const width = leftImage.naturalWidth || leftImage.width;
+  const height = leftImage.naturalHeight || leftImage.height;
+  canvas.width = width * 2;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(leftImage, 0, 0, width, height);
+  ctx.drawImage(rightImage, width, 0, width, height);
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+  ctx.lineWidth = Math.max(1, Math.round(width * 0.004));
+  ctx.beginPath();
+  ctx.moveTo(width + 0.5, 0);
+  ctx.lineTo(width + 0.5, height);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function setGtContentVisibility(mode) {
@@ -837,272 +1065,11 @@ function renderMaskOverlayOnCanvas(canvas, rgbImage, maskImage, opacity) {
   ctx.drawImage(maskCanvas, 0, 0);
 }
 
-function renderMaskOverlayFromGrayCanvas(canvas, rgbImage, grayCanvas, opacity) {
-  renderMaskOverlayOnCanvas(canvas, rgbImage, grayCanvas, opacity);
-}
-
-function renderAiOverlayView() {
-  const rgbImage = state.imageCache?.rgbImage;
-  if (!rgbImage || !state.aiAlphaImage) {
-    return;
-  }
-
-  if (state.aiOutputFormat === "binary") {
-    const thresholded = thresholdMaskCanvas(state.aiAlphaImage, state.aiMaskThreshold);
-    renderMaskOverlayFromGrayCanvas(
-      els.aiPredictionCanvas,
-      rgbImage,
-      thresholded,
-      state.aiMaskOpacity,
-    );
-    return;
-  }
-
-  renderMaskOverlayOnCanvas(
-    els.aiPredictionCanvas,
-    rgbImage,
-    state.aiAlphaImage,
-    state.aiMaskOpacity,
-  );
-}
-
-function renderAiBinaryView() {
-  const maskSource = getAiMaskSource();
-  if (!maskSource) {
-    return;
-  }
-
-  renderAiMaskOnCanvas(els.aiPredictionCanvas, maskSource, {
-    blackBackground: state.aiMaskBlackBackground,
-  });
-}
-
-function renderAiSplitView() {
-  const rgbImage = state.imageCache?.rgbImage;
-  const maskSource = getAiMaskSource();
-  if (!rgbImage || !maskSource) {
-    return;
-  }
-
-  const maskPreviewCanvas = document.createElement("canvas");
-  renderAiMaskOnCanvas(maskPreviewCanvas, maskSource, {
-    blackBackground: state.aiMaskBlackBackground,
-  });
-  const overlayCanvas = document.createElement("canvas");
-  renderMaskOverlayOnCanvas(overlayCanvas, rgbImage, maskSource, state.aiMaskOpacity);
-  renderSideBySideCanvas(els.aiPredictionCanvas, maskPreviewCanvas, overlayCanvas);
-}
-
 function renderGtSplitView() {
   const { rgbImage, maskImage } = state.imageCache;
   const overlayCanvas = document.createElement("canvas");
   renderMaskOverlayOnCanvas(overlayCanvas, rgbImage, maskImage, state.maskOpacity);
   renderSideBySideCanvas(els.maskSplitCanvas, maskImage, overlayCanvas);
-}
-
-function setComparePixel(imageData, offset, red, green, blue, alpha = 255) {
-  imageData.data[offset] = red;
-  imageData.data[offset + 1] = green;
-  imageData.data[offset + 2] = blue;
-  imageData.data[offset + 3] = alpha;
-}
-
-function renderBinaryComparePixel(
-  imageData,
-  offset,
-  predObject,
-  gtObject,
-  overlayOpacity = 1,
-) {
-  const alpha = Math.round(255 * overlayOpacity);
-  if (predObject && gtObject) {
-    setComparePixel(imageData, offset, 56, 203, 92, alpha);
-  } else if (!predObject && !gtObject) {
-    return;
-  } else if (!predObject && gtObject) {
-    setComparePixel(imageData, offset, 255, 255, 255, alpha);
-  } else {
-    setComparePixel(imageData, offset, 235, 64, 64, alpha);
-  }
-}
-
-function renderAlphaComparePixel(
-  imageData,
-  offset,
-  predA,
-  gtA,
-  overlayOpacity = 1,
-) {
-  const overlap = Math.min(predA, gtA);
-  const fnAmount = Math.max(0, gtA - predA);
-  const fpAmount = Math.max(0, predA - gtA);
-  const strength = Math.max(overlap, fnAmount, fpAmount);
-
-  if (strength < 0.01) {
-    return;
-  }
-
-  const red = Math.min(255, Math.round(fpAmount * 235 + fnAmount * 255));
-  const green = Math.min(255, Math.round(overlap * 203 + fnAmount * 255));
-  const blue = Math.min(255, Math.round(overlap * 92 + fnAmount * 255));
-  const alpha = Math.round(strength * 255 * overlayOpacity);
-  if (alpha <= 0) {
-    return;
-  }
-  setComparePixel(imageData, offset, red, green, blue, alpha);
-}
-
-function renderCompareMapOnCanvas(canvas, { overlayOpacity = 1, blackBackground = false } = {}) {
-  const predImg = state.aiAlphaImage;
-  const gtImg = state.imageCache?.maskImage;
-  if (!predImg || !gtImg) {
-    return null;
-  }
-
-  const width = predImg.naturalWidth;
-  const height = predImg.naturalHeight;
-  const predGray = readGrayscaleFromImage(predImg);
-  const gtGray = readGrayscaleFromImage(gtImg);
-  canvas.width = width;
-  canvas.height = height;
-
-  const ctx = canvas.getContext("2d");
-  const imageData = ctx.createImageData(width, height);
-  const cutoff = Math.round(state.aiMaskThreshold * 255);
-  const binaryCompare = state.aiOutputFormat === "binary";
-
-  for (let i = 0; i < predGray.length; i += 1) {
-    const offset = i * 4;
-    if (binaryCompare) {
-      renderBinaryComparePixel(
-        imageData,
-        offset,
-        predGray[i] > cutoff,
-        gtGray[i] > cutoff,
-        overlayOpacity,
-      );
-    } else {
-      renderAlphaComparePixel(
-        imageData,
-        offset,
-        predGray[i] / 255,
-        gtGray[i] / 255,
-        overlayOpacity,
-      );
-    }
-  }
-
-  if (blackBackground) {
-    ctx.fillStyle = "#000000";
-    ctx.fillRect(0, 0, width, height);
-  } else {
-    ctx.clearRect(0, 0, width, height);
-  }
-  ctx.putImageData(imageData, 0, 0);
-  return canvas;
-}
-
-function renderAiCompareView() {
-  renderCompareMapOnCanvas(els.aiPredictionCanvas, {
-    overlayOpacity: 1,
-    blackBackground: state.aiMaskBlackBackground,
-  });
-}
-
-function renderAiCompareOverlayView() {
-  const rgbImage = state.imageCache?.rgbImage;
-  if (!rgbImage) {
-    return;
-  }
-
-  const compareCanvas = document.createElement("canvas");
-  if (!renderCompareMapOnCanvas(compareCanvas, { overlayOpacity: state.aiMaskOpacity })) {
-    return;
-  }
-
-  const canvas = els.aiPredictionCanvas;
-  const ctx = canvas.getContext("2d");
-  canvas.width = rgbImage.naturalWidth;
-  canvas.height = rgbImage.naturalHeight;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(rgbImage, 0, 0);
-  ctx.drawImage(compareCanvas, 0, 0);
-}
-
-function renderAiCompareSplitView() {
-  const rgbImage = state.imageCache?.rgbImage;
-  if (!rgbImage) {
-    return;
-  }
-
-  const compareCanvas = document.createElement("canvas");
-  if (!renderCompareMapOnCanvas(compareCanvas, {
-    overlayOpacity: 1,
-    blackBackground: state.aiMaskBlackBackground,
-  })) {
-    return;
-  }
-
-  const overlayCompareCanvas = document.createElement("canvas");
-  if (!renderCompareMapOnCanvas(overlayCompareCanvas, { overlayOpacity: state.aiMaskOpacity })) {
-    return;
-  }
-
-  const overlayCanvas = document.createElement("canvas");
-  overlayCanvas.width = rgbImage.naturalWidth;
-  overlayCanvas.height = rgbImage.naturalHeight;
-  const ctx = overlayCanvas.getContext("2d");
-  ctx.drawImage(rgbImage, 0, 0);
-  ctx.drawImage(overlayCompareCanvas, 0, 0);
-
-  renderSideBySideCanvas(els.aiPredictionCanvas, compareCanvas, overlayCanvas);
-}
-
-function renderAiPanelView() {
-  if (!state.aiAlphaImage) {
-    setAiContentVisibility({ showImage: false, showCanvas: false });
-    updateAiControlUi();
-    return;
-  }
-
-  updateAiControlUi();
-
-  if (state.aiDisplayMode === "compare") {
-    if (state.aiComposeMode === "overlay") {
-      renderAiCompareOverlayView();
-    } else if (state.aiComposeMode === "split") {
-      renderAiCompareSplitView();
-    } else {
-      renderAiCompareView();
-    }
-    setAiContentVisibility({ showImage: false, showCanvas: true });
-    return;
-  }
-
-  if (state.aiComposeMode === "overlay") {
-    renderAiOverlayView();
-    setAiContentVisibility({ showImage: false, showCanvas: true });
-    return;
-  }
-
-  if (state.aiComposeMode === "split") {
-    renderAiSplitView();
-    setAiContentVisibility({ showImage: false, showCanvas: true });
-    return;
-  }
-
-  if (state.aiOutputFormat === "alpha") {
-    if (state.aiMaskBlackBackground) {
-      renderAiMaskOnCanvas(els.aiPredictionCanvas, state.aiAlphaImage, { blackBackground: true });
-      setAiContentVisibility({ showImage: false, showCanvas: true });
-    } else {
-      setAiContentVisibility({ showImage: true, showCanvas: false });
-    }
-    return;
-  }
-
-  renderAiBinaryView();
-  setAiContentVisibility({ showImage: false, showCanvas: true });
 }
 
 function renderGtPanelView() {
@@ -1693,49 +1660,18 @@ els.btnRunAi.addEventListener("click", () => {
   runAiPrediction();
 });
 
-for (const button of els.aiFormatButtons) {
-  button.addEventListener("click", () => {
-    if (!state.aiAlphaImage) {
-      return;
-    }
-    state.aiOutputFormat = button.dataset.aiFormat;
-    saveAiPrefs();
-    renderAiPanelView();
-  });
-}
-
-for (const button of els.aiModeButtons) {
-  button.addEventListener("click", () => {
-    if (!state.aiAlphaImage) {
-      return;
-    }
-    state.aiDisplayMode = button.dataset.aiMode;
-    saveAiPrefs();
-    renderAiPanelView();
-  });
-}
-
-for (const button of els.aiComposeButtons) {
-  button.addEventListener("click", () => {
-    if (!state.aiAlphaImage) {
-      return;
-    }
-    state.aiComposeMode = button.dataset.aiCompose;
-    saveAiPrefs();
-    renderAiPanelView();
-  });
-}
-
-for (const button of els.aiMaskBgButtons) {
-  button.addEventListener("click", () => {
-    if (!state.aiAlphaImage) {
-      return;
-    }
-    state.aiMaskBlackBackground = button.dataset.aiMaskBg === "black";
-    saveAiPrefs();
-    renderAiPanelView();
-  });
-}
+bindAiPanelButtons(els.aiFormatButtons, (button) => {
+  state.aiOutputFormat = button.dataset.aiFormat;
+});
+bindAiPanelButtons(els.aiModeButtons, (button) => {
+  state.aiDisplayMode = button.dataset.aiMode;
+});
+bindAiPanelButtons(els.aiComposeButtons, (button) => {
+  state.aiComposeMode = button.dataset.aiCompose;
+});
+bindAiPanelButtons(els.aiMaskBgButtons, (button) => {
+  state.aiMaskBlackBackground = button.dataset.aiMaskBg === "black";
+});
 
 for (const btn of [els.errorDialogClose, els.errorDialogOk]) {
   btn.addEventListener("click", hideErrorDialog);

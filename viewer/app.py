@@ -316,20 +316,37 @@ def api_predict(sample_index: int):
 
     image_path = ds.resolve_media_path(record["image"])
     gt_path = ds.resolve_media_path(record["mask"])
+    output_format = request.args.get("format", "alpha")
+    visualization = request.args.get("visualization", "raw")
+    background = request.args.get("background", "transparent")
+    for name, value, allowed in (
+        ("format", output_format, {"alpha", "binary"}),
+        ("visualization", visualization, {"raw", "compare"}),
+        ("background", background, {"transparent", "black"}),
+    ):
+        if value not in allowed:
+            abort(400, description=f"{name} must be one of: {', '.join(sorted(allowed))}")
+
     try:
         pred = model_runner.predict_alpha(image_path, record["point"])
         gt = np.array(Image.open(gt_path).convert("L"))
         metrics = _compute_alpha_metrics(pred, gt, model_runner.mask_threshold)
+        encoded, pil_mode = model_runner.encode_prediction_png(
+            pred,
+            output_format=output_format,
+            visualization=visualization,
+            background=background,
+            gt_u8=gt if visualization == "compare" else None,
+            threshold=model_runner.mask_threshold,
+        )
+    except ValueError as exc:
+        abort(400, description=str(exc))
     except Exception as exc:
         print(f"Prediction error for sample {sample_index}: {exc}")
         return jsonify({"error": str(exc)}), 500
 
     buf = io.BytesIO()
-    background = request.args.get("background", "transparent")
-    if background not in {"transparent", "black"}:
-        abort(400, description="background must be transparent or black")
-    encoded = ModelRunner.encode_alpha_png(pred, background=background)
-    Image.fromarray(encoded, mode=ModelRunner.alpha_png_mode(background)).save(buf, format="PNG")
+    Image.fromarray(encoded, mode=pil_mode).save(buf, format="PNG")
     buf.seek(0)
     response = send_file(buf, mimetype="image/png", download_name=f"{record['id']}_ai.png")
     response.headers["X-AI-Bin-F1"] = f"{metrics['bin_f1']:.4f}"
