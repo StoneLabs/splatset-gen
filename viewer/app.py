@@ -325,7 +325,11 @@ def api_predict(sample_index: int):
         return jsonify({"error": str(exc)}), 500
 
     buf = io.BytesIO()
-    Image.fromarray(pred, mode="L").save(buf, format="PNG")
+    background = request.args.get("background", "transparent")
+    if background not in {"transparent", "black"}:
+        abort(400, description="background must be transparent or black")
+    encoded = ModelRunner.encode_alpha_png(pred, background=background)
+    Image.fromarray(encoded, mode=ModelRunner.alpha_png_mode(background)).save(buf, format="PNG")
     buf.seek(0)
     response = send_file(buf, mimetype="image/png", download_name=f"{record['id']}_ai.png")
     response.headers["X-AI-Bin-F1"] = f"{metrics['bin_f1']:.4f}"
