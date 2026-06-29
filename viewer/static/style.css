@@ -164,6 +164,58 @@ h2 {
   cursor: wait;
 }
 
+.mode-controls .mode-btn {
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.45rem 0.85rem;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.mode-controls .mode-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.model-controls button {
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.45rem 0.7rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.model-controls button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.model-controls button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.workspace-interactive {
+  flex: 1 1 auto;
+}
+
+.workspace-interactive .pane-row {
+  flex: 1 1 auto;
+}
+
+#interactive-render-panel:not(.has-image) .panel-viewport {
+  pointer-events: none;
+}
+
+#interactive-render-panel.has-image #interactive-upload-placeholder {
+  display: none;
+}
+
 .overlay-control {
   display: inline-flex;
   align-items: center;
@@ -186,6 +238,12 @@ h2 {
   gap: 0;
   padding: 0.55rem;
   overflow: hidden;
+}
+
+.workspace[hidden],
+main[hidden],
+.toolbar-group[hidden] {
+  display: none !important;
 }
 
 .pane-row {
@@ -629,6 +687,8 @@ body.dragging-splitter .splitter-h * {
 }
 
 #ai-prediction-canvas[hidden],
+#interactive-ai-prediction-canvas[hidden],
+#interactive-ai-prediction-image[hidden],
 #mask-overlay-canvas[hidden],
 #mask-split-canvas[hidden],
 #ai-prediction-image[hidden],

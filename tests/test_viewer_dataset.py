@@ -103,6 +103,107 @@ def test_api_dataset_select(tmp_path) -> None:
     assert bad.status_code == 400
 
 
+def test_api_predict_interactive_requires_model(tmp_path) -> None:
+    root = tmp_path / "outputs"
+    _write_dataset(root / "run_a")
+
+    app = create_app(root, initial="run_a", checkpoint=tmp_path / "missing.pth")
+    client = app.test_client()
+
+    from PIL import Image
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (256, 256), color=(128, 64, 32)).save(buf, format="PNG")
+    buf.seek(0)
+
+    response = client.post(
+        "/api/predict/interactive",
+        data={"image": (buf, "test.png"), "x": "128", "y": "128"},
+    )
+    assert response.status_code == 503
+
+
+def test_api_predict_interactive_with_model(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "outputs"
+    _write_dataset(root / "run_a")
+
+    train_dir = Path(__file__).resolve().parent.parent / "train"
+    sys.path.insert(0, str(train_dir))
+    from config import load_training_config  # noqa: E402
+    import config as train_config_mod  # noqa: E402
+    import train as train_mod  # noqa: E402
+
+    cfg = load_training_config(train_dir / "training_config.yaml")
+    monkeypatch.setattr(train_mod, "cfg", cfg)
+    monkeypatch.setattr(train_config_mod, "cfg", cfg)
+
+    ckpt_path = tmp_path / "model.pth"
+    model = train_mod.PointConditionedUNet()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    train_mod.save_checkpoint(model, optimizer, 1, ckpt_path)
+
+    app = create_app(root, initial="run_a", checkpoint=ckpt_path)
+    client = app.test_client()
+
+    from PIL import Image
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (256, 256), color=(200, 100, 50)).save(buf, format="PNG")
+    buf.seek(0)
+
+    response = client.post(
+        "/api/predict/interactive",
+        data={"image": (buf, "test.png"), "x": "128", "y": "128"},
+    )
+    assert response.status_code == 200
+    assert response.mimetype == "image/png"
+    assert response.headers.get("X-AI-Threshold")
+
+
+def test_api_predict_interactive_large_image(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "outputs"
+    _write_dataset(root / "run_a")
+
+    train_dir = Path(__file__).resolve().parent.parent / "train"
+    sys.path.insert(0, str(train_dir))
+    from config import load_training_config  # noqa: E402
+    import config as train_config_mod  # noqa: E402
+    import train as train_mod  # noqa: E402
+
+    cfg = load_training_config(train_dir / "training_config.yaml")
+    monkeypatch.setattr(train_mod, "cfg", cfg)
+    monkeypatch.setattr(train_config_mod, "cfg", cfg)
+
+    ckpt_path = tmp_path / "model.pth"
+    model = train_mod.PointConditionedUNet()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    train_mod.save_checkpoint(model, optimizer, 1, ckpt_path)
+
+    app = create_app(root, initial="run_a", checkpoint=ckpt_path)
+    client = app.test_client()
+
+    from PIL import Image
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (1920, 1080), color=(90, 120, 150)).save(buf, format="PNG")
+    buf.seek(0)
+
+    response = client.post(
+        "/api/predict/interactive",
+        data={"image": (buf, "large.png"), "x": "960", "y": "540"},
+    )
+    assert response.status_code == 200
+    assert response.mimetype == "image/png"
+
+    from PIL import Image as PILImage
+
+    pred = PILImage.open(io.BytesIO(response.data))
+    assert pred.size == (1920, 1080)
+
+
 def test_training_config_sidecar_from_checkpoint(tmp_path, monkeypatch) -> None:
     root = tmp_path / "outputs"
     _write_dataset(root / "run_a")
