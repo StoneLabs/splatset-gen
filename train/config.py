@@ -53,6 +53,7 @@ def load_training_config(path: Path | str | None = None) -> SimpleNamespace:
         TEST_RATIO=float(dataset.get("test_ratio", 0.10)),
         SEED=int(dataset.get("seed", 42)),
         BASE_CHANNELS=int(model.get("base_channels", 32)),
+        CHANNELS=[int(c) for c in (model.get("channels") or [32, 64, 128, 192, 224])],
         EPOCHS=int(training.get("epochs", 100)),
         BATCH_SIZE=int(training.get("batch_size", 8)),
         NUM_WORKERS=int(training.get("num_workers", 0)),
