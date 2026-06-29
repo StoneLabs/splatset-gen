@@ -49,6 +49,33 @@ def _annotation_path(dataset_dir: Path) -> Path | None:
     return None
 
 
+def _mask_value_at(mask: Image.Image, x: float, y: float) -> int:
+    px = int(round(x))
+    py = int(round(y))
+    px = max(0, min(mask.width - 1, px))
+    py = max(0, min(mask.height - 1, py))
+    return mask.getpixel((px, py))
+
+
+def click_on_mask(mask: Image.Image, x: float, y: float, threshold: int = 127) -> bool:
+    """Return True when the click lands on a foreground mask pixel."""
+    return _mask_value_at(mask, x, y) > threshold
+
+
+def _click_on_target_mask(mask_path: Path, point: list[int], threshold: int = 127) -> bool:
+    """Return True when the annotated click is on a non-black mask pixel."""
+    try:
+        with Image.open(mask_path) as mask:
+            return click_on_mask(
+                mask.convert("L"),
+                float(point[0]),
+                float(point[1]),
+                threshold=threshold,
+            )
+    except OSError:
+        return False
+
+
 def load_samples_from_dir(dataset_dir: Path, run_name: str | None = None) -> list[dict]:
     """Load samples from one generator output directory."""
     dataset_dir = dataset_dir.resolve()
@@ -58,20 +85,38 @@ def load_samples_from_dir(dataset_dir: Path, run_name: str | None = None) -> lis
 
     run = run_name or dataset_dir.name
     samples: list[dict] = []
+    total = 0
+    skipped = 0
     with jsonl_path.open() as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             rec = json.loads(line)
+            total += 1
+            mask_path = dataset_dir / rec["mask"]
+            if not _click_on_target_mask(mask_path, rec["point"]):
+                skipped += 1
+                continue
             samples.append(
                 {
                     "image": str(dataset_dir / rec["image"]),
-                    "mask": str(dataset_dir / rec["mask"]),
+                    "mask": str(mask_path),
                     "point": rec["point"],
                     "run": run,
                 }
             )
+
+    if total > 0 and not samples:
+        raise ValueError(
+            f"No valid samples in {dataset_dir}: all {skipped} annotation(s) have "
+            "click on black mask or unreadable mask file"
+        )
+    if skipped:
+        print(
+            f"Warning: skipped {skipped}/{total} sample(s) in {dataset_dir} "
+            "(click not on mask foreground)"
+        )
     return samples
 
 
@@ -167,19 +212,6 @@ def _rotate_point(x: float, y: float, cx: float, cy: float, angle_deg: float) ->
     nx = cx + dx * cos_a + dy * sin_a
     ny = cy - dx * sin_a + dy * cos_a
     return nx, ny
-
-
-def _mask_value_at(mask: Image.Image, x: float, y: float) -> int:
-    px = int(round(x))
-    py = int(round(y))
-    px = max(0, min(mask.width - 1, px))
-    py = max(0, min(mask.height - 1, py))
-    return mask.getpixel((px, py))
-
-
-def click_on_mask(mask: Image.Image, x: float, y: float, threshold: int = 127) -> bool:
-    """Return True when the click lands on a foreground mask pixel."""
-    return _mask_value_at(mask, x, y) > threshold
 
 
 def transform_hflip(

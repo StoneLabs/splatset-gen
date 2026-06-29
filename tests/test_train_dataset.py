@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 _TRAIN_DIR = Path(__file__).resolve().parent.parent / "train"
 sys.path.insert(0, str(_TRAIN_DIR))
@@ -14,13 +15,28 @@ sys.path.insert(0, str(_TRAIN_DIR))
 from dataset import load_all_samples, load_samples_from_dir, stratified_split
 
 
-def _write_sample(dataset_dir: Path, sample_id: str, point: list[int]) -> None:
+def _write_sample(
+    dataset_dir: Path,
+    sample_id: str,
+    point: list[int],
+    *,
+    mask_value: int = 255,
+    size: tuple[int, int] = (64, 64),
+) -> None:
     images = dataset_dir / "images"
     masks = dataset_dir / "masks"
     images.mkdir(parents=True, exist_ok=True)
     masks.mkdir(parents=True, exist_ok=True)
-    (images / f"{sample_id}.png").write_bytes(b"png")
-    (masks / f"{sample_id}.png").write_bytes(b"png")
+
+    width, height = size
+    Image.new("RGB", (width, height), (128, 128, 128)).save(images / f"{sample_id}.png")
+
+    mask = Image.new("L", (width, height), 0)
+    px = max(0, min(width - 1, point[0]))
+    py = max(0, min(height - 1, point[1]))
+    mask.putpixel((px, py), mask_value)
+    mask.save(masks / f"{sample_id}.png")
+
     record = {
         "id": sample_id,
         "image": f"images/{sample_id}.png",
@@ -71,6 +87,26 @@ def test_load_all_samples_legacy_run_layout(tmp_path: Path) -> None:
 def test_load_all_samples_missing_dir() -> None:
     with pytest.raises(FileNotFoundError, match="Dataset directory not found"):
         load_all_samples(dataset_dirs=["/no/such/dataset"])
+
+
+def test_load_samples_skips_click_on_black_mask(tmp_path: Path) -> None:
+    ds = tmp_path / "run_a"
+    ds.mkdir()
+    _write_sample(ds, "000001", [10, 20], mask_value=255)
+    _write_sample(ds, "000002", [30, 40], mask_value=0)
+
+    samples = load_samples_from_dir(ds)
+    assert len(samples) == 1
+    assert samples[0]["point"] == [10, 20]
+
+
+def test_load_samples_raises_when_all_clicks_on_black(tmp_path: Path) -> None:
+    ds = tmp_path / "run_a"
+    ds.mkdir()
+    _write_sample(ds, "000001", [5, 5], mask_value=0)
+
+    with pytest.raises(ValueError, match="click on black mask"):
+        load_samples_from_dir(ds)
 
 
 def test_stratified_split_keeps_runs() -> None:
