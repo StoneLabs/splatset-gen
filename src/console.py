@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, TextIO
 
 import click
+import yaml
 
 from background import background_from_config, list_background_images
 from augment import get_augmentation_config
@@ -372,6 +373,7 @@ def print_plan(
     seed: int,
     verbose: bool,
     project_root: Path | None = None,
+    continue_from: int | None = None,
 ) -> None:
     render = cfg.get("render", {})
     scene = cfg.get("scene", {})
@@ -382,7 +384,16 @@ def print_plan(
     threads_per_worker = max(1, cpu // max(workers, 1))
     cap = generation.get("max_gaussians_per_object")
 
-    if output_dir_in_use(output):
+    if continue_from is not None:
+        last_id = f"{continue_from - 1:06d}"
+        first_id = f"{continue_from:06d}"
+        last_new_id = f"{continue_from + num_samples - 1:06d}"
+        summary = _describe_output_dir(output)
+        output_line = (
+            f"  Output           [cyan]{output}[/]  "
+            f"[green](continue after {last_id} → {first_id}–{last_new_id}; {summary})[/]"
+        )
+    elif output_dir_in_use(output):
         summary = _describe_output_dir(output)
         output_line = (
             f"  Output           [cyan]{output}[/]  "
@@ -480,6 +491,63 @@ def _describe_output_dir(path: Path) -> str:
             pass
     entries = sum(1 for _ in path.iterdir())
     return f"{entries} item(s)"
+
+
+def resolve_continue_config(
+    *,
+    output_dir: Path,
+    cli_config_path: Path,
+    cli_cfg: dict[str, Any],
+    auto_confirm: bool,
+) -> tuple[dict[str, Any], Path]:
+    """Pick CLI or dataset config when continuing an existing run."""
+    snapshot_path = output_dir / "config.yaml"
+    if not snapshot_path.is_file():
+        console.print("[dim]No config.yaml in dataset; using CLI config.[/]\n")
+        return cli_cfg, cli_config_path
+
+    with snapshot_path.open(encoding="utf-8") as f:
+        dataset_cfg = yaml.safe_load(f) or {}
+
+    if dataset_cfg == cli_cfg:
+        return cli_cfg, cli_config_path
+
+    console.print()
+    console.print(
+        Panel(
+            f"CLI config:     [cyan]{cli_config_path}[/]\n"
+            f"Dataset config: [cyan]{snapshot_path}[/]\n\n"
+            "[yellow]Configs differ. Pick one for new samples so the run stays consistent.[/]",
+            title="[bold yellow]Config mismatch[/]",
+            border_style="yellow",
+            padding=(1, 2),
+        )
+    )
+    console.print()
+
+    if auto_confirm:
+        console.print(
+            "[red]Cannot choose config non-interactively (--yes). "
+            "Align configs or rerun without --yes.[/]"
+        )
+        raise SystemExit(1)
+
+    if not sys.stdin.isatty():
+        console.print("[yellow]Non-interactive terminal — cannot choose config.[/]")
+        raise SystemExit(1)
+
+    choice = click.prompt(
+        "Use dataset or CLI config?",
+        type=click.Choice(["dataset", "cli"], case_sensitive=False),
+        default="dataset",
+        show_default=True,
+    )
+    if choice == "dataset":
+        console.print(f"[dim]Using dataset config[/] [cyan]{snapshot_path}[/]\n")
+        return dataset_cfg, snapshot_path
+
+    console.print(f"[dim]Using CLI config[/] [cyan]{cli_config_path}[/]\n")
+    return cli_cfg, cli_config_path
 
 
 def prepare_output_dir(output: Path, *, auto_confirm: bool = False) -> None:

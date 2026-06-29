@@ -27,6 +27,35 @@ class SampleRecord:
     augmentation: dict[str, Any] | None = None
 
 
+def get_last_sample_index(output_dir: Path) -> int:
+    """Return numeric index of the last sample in ``output_dir`` (0 if none)."""
+    jsonl = output_dir / "annotations.jsonl"
+    if jsonl.is_file():
+        last_id: str | None = None
+        with jsonl.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                last_id = str(record["id"])
+        if last_id is not None:
+            return int(last_id)
+
+    images = output_dir / "images"
+    if images.is_dir():
+        max_idx = 0
+        for path in images.glob("*.png"):
+            try:
+                max_idx = max(max_idx, int(path.stem))
+            except ValueError:
+                continue
+        if max_idx > 0:
+            return max_idx
+
+    return 0
+
+
 def save_config_snapshot(output_dir: Path, config: dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     with (output_dir / "config.yaml").open("w") as f:
