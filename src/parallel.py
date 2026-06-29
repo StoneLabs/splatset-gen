@@ -175,14 +175,17 @@ def generate_dataset_parallel(
     verbose: bool = False,
     show_progress: bool = True,
     project_root: Path | None = None,
+    start_index: int = 1,
+    write_config_snapshot: bool = True,
 ) -> list[str]:
-    """Generate ``num_samples`` in parallel; write config snapshot once."""
+    """Generate ``num_samples`` in parallel; optional config snapshot at start."""
     ply_paths = sorted(ply_dir.glob("*.ply"))
     if not ply_paths:
         raise FileNotFoundError(f"No .ply files in {ply_dir}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    save_config_snapshot(output_dir, config)
+    if write_config_snapshot:
+        save_config_snapshot(output_dir, config)
 
     config = dict(config)
     config["_workers"] = workers
@@ -192,7 +195,7 @@ def generate_dataset_parallel(
     ply_paths_str = [str(p) for p in ply_paths]
 
     tasks = [
-        (i + 1, seed, config, ply_paths_str, str(output_dir), verbose)
+        (start_index + i, seed, config, ply_paths_str, str(output_dir), verbose)
         for i in range(num_samples)
     ]
 

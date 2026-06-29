@@ -7,6 +7,7 @@ Examples:
   PYTHONPATH=src python scripts/generate_dataset.py
   PYTHONPATH=src python scripts/generate_dataset.py -h
   PYTHONPATH=src python scripts/generate_dataset.py -n 10 -j 1 -c configs/dev_fast.yaml -y
+  PYTHONPATH=src python scripts/generate_dataset.py -o outputs/run_001 --continue -n 50 -y
 """
 
 from __future__ import annotations
@@ -20,7 +21,14 @@ import typer
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from console import confirm_or_exit, prepare_output_dir, print_plan  # noqa: E402
+from console import (  # noqa: E402
+    confirm_or_exit,
+    output_dir_in_use,
+    prepare_output_dir,
+    print_plan,
+    resolve_continue_config,
+)
+from export import get_last_sample_index  # noqa: E402
 from parallel import generate_dataset_parallel, load_config  # noqa: E402
 
 DEFAULT_PLY_DIR = ROOT / "assets" / "ply"
@@ -51,8 +59,8 @@ def main(
         "-o",
         help=(
             f"Output run directory [default: {DEFAULT_OUTPUT}]. "
-            "Must be empty; if it already contains a run you will be asked "
-            "y/N to delete it (or pass --yes to delete without asking)."
+            "Must be empty unless --continue is set; if it already contains a run "
+            "you will be asked y/N to delete it (or pass --yes to delete without asking)."
         ),
     ),
     num_samples: int = typer.Option(
@@ -94,6 +102,14 @@ def main(
             "then start generation without the Enter prompt"
         ),
     ),
+    continue_: bool = typer.Option(
+        False,
+        "--continue",
+        help=(
+            "Append to an existing output run: detect the last sample and generate "
+            "the next --num-samples IDs without deleting prior files"
+        ),
+    ),
 ) -> None:
     """Generate a click-to-segment dataset from 3DGS PLY objects."""
     ply_dir = _resolve_path(ply_dir)
@@ -113,11 +129,35 @@ def main(
         workers = max(1, (os.cpu_count() or 2) - 1)
 
     cfg = load_config(config)
+    config_path = config
+
+    start_index = 1
+    write_config_snapshot = True
+    continue_from: int | None = None
+    if continue_:
+        if not output.is_dir():
+            raise typer.BadParameter(f"Cannot continue: output directory not found: {output}")
+        if not output_dir_in_use(output):
+            raise typer.BadParameter(f"Cannot continue: output directory is empty: {output}")
+        last_index = get_last_sample_index(output)
+        if last_index <= 0:
+            raise typer.BadParameter(f"Cannot continue: no existing samples in {output}")
+        start_index = last_index + 1
+        continue_from = start_index
+        write_config_snapshot = False
+        cfg, config_path = resolve_continue_config(
+            output_dir=output,
+            cli_config_path=config,
+            cli_cfg=cfg,
+            auto_confirm=yes,
+        )
+    else:
+        prepare_output_dir(output, auto_confirm=yes)
 
     print_plan(
         ply_dir=ply_dir,
         ply_files=ply_files,
-        config_path=config,
+        config_path=config_path,
         cfg=cfg,
         output=output,
         num_samples=num_samples,
@@ -125,8 +165,8 @@ def main(
         seed=seed,
         verbose=verbose,
         project_root=ROOT,
+        continue_from=continue_from,
     )
-    prepare_output_dir(output, auto_confirm=yes)
     confirm_or_exit(skip=yes)
 
     generate_dataset_parallel(
@@ -139,6 +179,8 @@ def main(
         verbose=verbose,
         show_progress=True,
         project_root=ROOT,
+        start_index=start_index,
+        write_config_snapshot=write_config_snapshot,
     )
 
 
