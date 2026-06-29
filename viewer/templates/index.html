@@ -8,7 +8,10 @@
   </head>
   <body>
     <header class="toolbar">
-      <div class="toolbar-group dataset-controls">
+      <div class="toolbar-group mode-controls">
+        <button id="btn-toggle-mode" type="button" title="Switch to interactive mode">Interactive</button>
+      </div>
+      <div class="toolbar-group dataset-controls" id="dataset-controls">
         <label class="dataset-select">
           <span>Dataset</span>
           <select id="dataset-select" aria-label="Select dataset run"></select>
@@ -16,11 +19,13 @@
         <button id="btn-reload-dataset" type="button" title="Rescan datasets folder and reload selection">
           Reload
         </button>
+      </div>
+      <div class="toolbar-group model-controls">
         <button id="btn-reload-model" type="button" title="Reload model checkpoint from disk">
           Reload Model
         </button>
       </div>
-      <div class="toolbar-group nav-controls">
+      <div class="toolbar-group nav-controls" id="nav-controls">
         <button id="btn-first" type="button" title="First sample (Home)">|◀</button>
         <button id="btn-prev" type="button" title="Previous (←)">◀</button>
         <label class="index-input">
@@ -44,7 +49,7 @@
       </div>
     </header>
 
-    <main class="workspace" id="workspace">
+    <main class="workspace" id="workspace-dataset">
       <div class="pane-row" id="row-top">
         <section class="panel" aria-label="Rendered image with click point">
           <header>
@@ -264,6 +269,91 @@
       </div>
     </main>
 
+    <main class="workspace workspace-interactive" id="workspace-interactive" hidden>
+      <div class="pane-row" id="interactive-row-top">
+        <section class="panel" aria-label="Uploaded image with click point">
+          <header>
+            <h2>Image</h2>
+            <span id="interactive-click-label" class="chip"></span>
+            <input id="interactive-image-upload" type="file" accept="image/*" hidden />
+            <button id="btn-interactive-upload" type="button" class="ghost">Upload</button>
+          </header>
+          <div class="panel-body image-panel fit-mode" id="interactive-render-panel">
+            <div class="panel-viewport" data-zoom-panel="interactive">
+              <div class="panel-viewport-content" data-zoom-content="interactive">
+                <canvas id="interactive-render-canvas"></canvas>
+              </div>
+            </div>
+            <p id="interactive-upload-placeholder" class="panel-placeholder">
+              Upload an image, then click on it to run AI prediction.
+            </p>
+          </div>
+        </section>
+
+        <div
+          class="splitter splitter-v"
+          id="splitter-interactive-col"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize image and AI columns"
+          tabindex="0"
+        ></div>
+
+        <section class="panel" aria-label="AI predicted mask">
+          <header>
+            <h2>AI Prediction</h2>
+            <button
+              id="interactive-ai-model-label"
+              type="button"
+              class="chip chip-button muted-chip"
+              disabled
+              title="Show checkpoint metadata"
+            >
+              no model
+            </button>
+          </header>
+          <div class="panel-body image-panel fit-mode" id="interactive-ai-panel">
+            <div id="interactive-ai-panel-controls" class="panel-float-controls" hidden>
+              <div class="panel-segmented" role="group" aria-label="Output format">
+                <button type="button" class="active" data-interactive-ai-format="alpha">Alpha</button>
+                <button type="button" data-interactive-ai-format="binary">Binary</button>
+              </div>
+              <div class="panel-segmented" role="group" aria-label="Display mode">
+                <button type="button" class="active" data-interactive-ai-mode="raw">Raw</button>
+                <button type="button" data-interactive-ai-mode="compare" disabled title="No ground truth in interactive mode">Compare</button>
+              </div>
+              <div class="panel-segmented" role="group" aria-label="AI composition" id="interactive-ai-compose-controls">
+                <button type="button" class="active" data-interactive-ai-compose="mask">Mask</button>
+                <button type="button" data-interactive-ai-compose="overlay">Overlay</button>
+                <button type="button" data-interactive-ai-compose="split" title="Side-by-side mask and overlay">Side-by-Side</button>
+              </div>
+              <label class="panel-float-opacity" id="interactive-ai-overlay-opacity" hidden title="AI overlay opacity">
+                <input id="interactive-ai-mask-opacity" type="range" min="0" max="100" value="50" />
+                <span id="interactive-ai-mask-opacity-label">50%</span>
+              </label>
+              <div class="panel-float-labeled-control" id="interactive-ai-mask-bg-controls" hidden>
+                <span class="panel-float-label">Background:</span>
+                <div class="panel-segmented" role="group" aria-label="Mask background">
+                  <button type="button" class="active" data-interactive-ai-mask-bg="transparent">Clear</button>
+                  <button type="button" data-interactive-ai-mask-bg="black">Black</button>
+                </div>
+              </div>
+            </div>
+            <div class="panel-viewport" data-zoom-panel="interactive-ai">
+              <div class="panel-viewport-content" data-zoom-content="interactive-ai">
+                <img id="interactive-ai-prediction-image" alt="AI prediction not generated yet" hidden />
+                <canvas id="interactive-ai-prediction-canvas" hidden></canvas>
+              </div>
+            </div>
+            <p id="interactive-ai-placeholder" class="panel-placeholder">Click on the image to predict a mask.</p>
+            <div id="interactive-ai-metrics-bar" class="image-panel-footer" hidden>
+              <span id="interactive-ai-f1-label" class="ai-f1-label">F1 —</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
     <div id="error-dialog-backdrop" class="error-dialog-backdrop" hidden>
       <div class="error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="error-dialog-title">
         <header>
@@ -277,6 +367,6 @@
       </div>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+    <script type="module" src="{{ url_for('static', filename='js/main.js') }}"></script>
   </body>
 </html>

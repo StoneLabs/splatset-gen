@@ -25,6 +25,9 @@ COMPARE_COLORS = {
     "fn": np.array([255, 255, 255], dtype=np.uint8),
 }
 
+# Training renders at 512×512; the U-Net pools 5× so spatial dims must stay aligned.
+MODEL_INPUT_SIZE = 512
+
 
 def resolve_device(device: str | None = None) -> torch.device:
     setting = device or cfg.DEVICE
@@ -124,6 +127,46 @@ def classify_compare_pixels(
     return kinds
 
 
+def _scale_point(
+    point: list[int] | tuple[int, int],
+    from_size: tuple[int, int],
+    to_size: tuple[int, int],
+) -> tuple[int, int]:
+    fw, fh = from_size
+    tw, th = to_size
+
+    def map_coord(coord: int, from_dim: int, to_dim: int) -> int:
+        from_max = max(from_dim - 1, 1)
+        to_max = max(to_dim - 1, 0)
+        return int(round(coord / from_max * to_max))
+
+    x = max(0, min(tw - 1, map_coord(int(point[0]), fw, tw)))
+    y = max(0, min(th - 1, map_coord(int(point[1]), fh, th)))
+    return x, y
+
+
+def _resize_for_model(
+    img: Image.Image,
+    point: list[int] | tuple[int, int],
+    size: int = MODEL_INPUT_SIZE,
+) -> tuple[Image.Image, tuple[int, int], tuple[int, int]]:
+    orig_w, orig_h = img.size
+    target = (size, size)
+    if (orig_w, orig_h) == target:
+        return img, (int(point[0]), int(point[1])), (orig_w, orig_h)
+
+    resized = img.resize(target, Image.BILINEAR)
+    scaled_point = _scale_point(point, (orig_w, orig_h), target)
+    return resized, scaled_point, (orig_w, orig_h)
+
+
+def _resize_alpha(alpha: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    width, height = size
+    if alpha.shape == (height, width):
+        return alpha
+    return np.array(Image.fromarray(alpha).resize((width, height), Image.BILINEAR))
+
+
 class ModelRunner:
     """Cached model for repeated inference (viewer, scripts)."""
 
@@ -138,9 +181,14 @@ class ModelRunner:
         self.mask_threshold = float(mask_threshold if mask_threshold is not None else cfg.MASK_THRESHOLD)
 
     @torch.no_grad()
-    def predict_alpha(self, image_path: Path | str, point: list[int] | tuple[int, int]) -> np.ndarray:
+    def predict_alpha_from_pil(
+        self,
+        img: Image.Image,
+        point: list[int] | tuple[int, int],
+    ) -> np.ndarray:
         """Return alpha mask as uint8 array with values 0–255 (sigmoid output)."""
-        img = Image.open(image_path).convert("RGB")
+        img = img.convert("RGB")
+        img, point, orig_size = _resize_for_model(img, point)
         width, height = img.size
         img_t = (
             torch.from_numpy(np.array(img))
@@ -156,7 +204,14 @@ class ModelRunner:
         )
         logits = self.model(img_t, pt)
         alpha = torch.sigmoid(logits)[0, 0].float().cpu().numpy()
-        return (alpha * 255.0).astype(np.uint8)
+        alpha_u8 = (alpha * 255.0).astype(np.uint8)
+        return _resize_alpha(alpha_u8, orig_size)
+
+    @torch.no_grad()
+    def predict_alpha(self, image_path: Path | str, point: list[int] | tuple[int, int]) -> np.ndarray:
+        """Return alpha mask as uint8 array with values 0–255 (sigmoid output)."""
+        img = Image.open(image_path).convert("RGB")
+        return self.predict_alpha_from_pil(img, point)
 
     @torch.no_grad()
     def predict_mask(self, image_path: Path | str, point: list[int] | tuple[int, int]) -> np.ndarray:

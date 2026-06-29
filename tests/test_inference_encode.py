@@ -160,3 +160,23 @@ def test_encode_prediction_png_compare_requires_gt() -> None:
             visualization="compare",
             background="black",
         )
+
+
+def test_predict_alpha_from_pil_resizes_non_square_images(tmp_path) -> None:
+    import torch
+    from PIL import Image
+
+    import train as train_mod
+
+    ckpt_path = tmp_path / "model.pth"
+    model = train_mod.PointConditionedUNet()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    train_mod.save_checkpoint(model, optimizer, 1, ckpt_path)
+
+    runner = ModelRunner(ckpt_path, device="cpu")
+    # 450px height triggers 224 vs 225 skip mismatch without resize-to-512.
+    img = Image.new("RGB", (800, 450), color=(120, 80, 40))
+    alpha = runner.predict_alpha_from_pil(img, [400, 225])
+
+    assert alpha.shape == (450, 800)
+    assert alpha.dtype == np.uint8

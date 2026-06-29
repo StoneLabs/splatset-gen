@@ -423,6 +423,48 @@ def api_predict(sample_index: int):
     return response
 
 
+@app.route("/api/predict/interactive", methods=["POST"])
+def api_predict_interactive():
+    if model_runner is None:
+        abort(503, description="No model loaded. Pass --model with a checkpoint (.pth).")
+
+    upload = request.files.get("image")
+    if upload is None or not upload.filename:
+        abort(400, description="Missing image file")
+
+    try:
+        x = int(request.form["x"])
+        y = int(request.form["y"])
+    except (KeyError, TypeError, ValueError):
+        abort(400, description="x and y must be integers")
+
+    try:
+        img = Image.open(upload.stream).convert("RGB")
+        width, height = img.size
+        if not (0 <= x < width and 0 <= y < height):
+            abort(400, description=f"Point ({x}, {y}) is outside image bounds ({width}x{height})")
+        pred = model_runner.predict_alpha_from_pil(img, [x, y])
+        encoded, pil_mode = model_runner.encode_prediction_png(
+            pred,
+            output_format="alpha",
+            visualization="raw",
+            background="transparent",
+            threshold=model_runner.mask_threshold,
+        )
+    except ValueError as exc:
+        abort(400, description=str(exc))
+    except Exception as exc:
+        print(f"Interactive prediction error: {exc}")
+        return jsonify({"error": str(exc)}), 500
+
+    buf = io.BytesIO()
+    Image.fromarray(encoded, mode=pil_mode).save(buf, format="PNG")
+    buf.seek(0)
+    response = send_file(buf, mimetype="image/png", download_name="interactive_ai.png")
+    response.headers["X-AI-Threshold"] = str(model_runner.mask_threshold)
+    return response
+
+
 @app.errorhandler(HTTPException)
 def handle_http_exception(exc: HTTPException):
     if request.path.startswith("/api/"):
