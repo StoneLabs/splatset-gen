@@ -1,8 +1,6 @@
 # splat-proj
 
-CPU pipeline → synthetic click-to-segment data from 3DGS PLYs. Train U-Net. Run inference via CLI or viewer.
-
-Each sample: RGB image, occlusion-aware object mask, click `(x, y)` in `annotations.jsonl`.
+Synthetic click-to-segment data from 3DGS PLYs. U-Net training code and inference via CLI or viewer included.
 
 ## Setup
 
@@ -10,7 +8,7 @@ Each sample: RGB image, occlusion-aware object mask, click `(x, y)` in `annotati
 uv sync --extra dev
 ```
 
-Put 3DGS `.ply` files in `assets/ply/`. PyTorch installs CUDA wheel from `pyproject.toml` (falls back to CPU/MPS if no GPU).
+Put 3DGS `.ply` files in `assets/ply/`.
 
 ## Configuration
 
